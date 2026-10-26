@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Suggest tag/folder rules from repeated senders that no rule covers yet.
+
+    suggest-rules [--days 30] [--min 5] [--account NAME] [--json]
+
+Looks at mail from the last --days in the local copies, groups it by sender
+(and by domain when several addresses share one), skips mail already tagged by
+a rule in /rules/tags.yaml, and guesses what each group is (newsletter,
+notification, receipt, person). Prints ready-to-paste rules for tags.yaml.
+Read-only: it never changes rules, tags or mail.
+"""
+import argparse
+import email.parser
+import json
+import re
+import subprocess
+from collections import defaultdict
+from pathlib import Path
+
+import yaml
+
+ACCOUNTS_FILE = Path.home() / ".config/emailassist/accounts.json"
+RULES_FILE = Path("/rules/tags.yaml")
+AUTOMATED = re.compile(r"^(no-?reply|do-?not-?reply|notifications?|alerts?|mailer|bounce|news(letter)?|info|updates?|support)[@+.-]", re.I)
+
+
+def notmuch_json(*args):
+    out = subprocess.run(["notmuch", *args], check=True, capture_output=True, text=True).stdout
+    return json.loads(out or "[]")
+
+
+def rule_tags():
+    if not RULES_FILE.exists():
+        return set()
+    rules = (yaml.safe_load(RULES_FILE.read_text()) or {}).get("rules") or []
+    return {t for r in rules for t in (r.get("tags") or [])}
+
+
+def classify(sample_file, address):
+    """Best-effort guess from one sample message's headers."""
+    try:
+        with open(sample_file, "rb") as f:
+            h = email.parser.BytesHeaderParser().parse(f)
+    except OSError:
+        h = {}
+    subject = (h.get("Subject") or "").lower()
+    if re.search(r"receipt|invoice|order|payment|statement|bill", subject):
+        return "receipt", "Receipts"
+    if h.get("List-Unsubscribe") or h.get("List-Id"):
+        return "newsletter", "Newsletters"
+    if AUTOMATED.match(address) or h.get("Auto-Submitted", "no") != "no":
+        return "notification", "Notifications"
+    return "person", None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--days", type=int, default=30)
+    ap.add_argument("--min", type=int, default=5)
+    ap.add_argument("--account")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args()
+
+    accounts = {a["name"]: a for a in json.loads(ACCOUNTS_FILE.read_text())}
+    names = [args.account] if args.account else list(accounts)
+    covered = rule_tags()
+    not_covered = (" and not (" + " or ".join(f"tag:{t}" for t in sorted(covered)) + ")") if covered else ""
+    own = {a["address"].lower() for a in accounts.values()}
+
+    # sender address -> {count, name, accounts}
+    senders = defaultdict(lambda: {"count": 0, "name": "", "accounts": set()})
+    for name in names:
+        # Your own addresses (i.e. sent mail) are skipped below.
+        query = f'date:{args.days}d.. and path:"{name}/**"{not_covered}'
+        for s in notmuch_json("address", "--format=json", "--output=sender", "--output=count",
+                              "--deduplicate=address", "--", query):
+            addr = s["address"].lower()
+            if addr in own:
+                continue
+            senders[addr]["count"] += s["count"]
+            senders[addr]["name"] = senders[addr]["name"] or s.get("name", "")
+            senders[addr]["accounts"].add(name)
+
+    # Several addresses at one domain that are frequent together become one domain rule.
+    by_domain = defaultdict(list)
+    for addr, s in senders.items():
+        by_domain[addr.split("@")[-1]].append(addr)
+    groups = []
+    for domain, addrs in by_domain.items():
+        total = sum(senders[a]["count"] for a in addrs)
+        if len(addrs) > 1 and total >= args.min:
+            groups.append({"match": domain, "addrs": addrs, "count": total})
+        else:
+            groups += [{"match": a, "addrs": [a], "count": senders[a]["count"]}
+                       for a in addrs if senders[a]["count"] >= args.min]
+    groups.sort(key=lambda g: -g["count"])
+
+    suggestions = []
+    for g in groups:
+        accts = sorted(set().union(*(senders[a]["accounts"] for a in g["addrs"])))
+        query = f"from:{g['match']}"
+        scoped = f"date:{args.days}d.. and {query} and (" + " or ".join(f'path:"{n}/**"' for n in accts) + ")"
+        sample = notmuch_json("search", "--format=json", "--output=summary", "--limit=3", "--", scoped)
+        files = notmuch_json("search", "--format=json", "--output=files", "--limit=1", "--", scoped)
+        kind, folder = classify(files[0] if files else "", g["addrs"][0])
+        slug = re.sub(r"[^a-z0-9]+", "-", g["match"].split("@")[-1].rsplit(".", 1)[0].lower()).strip("-")
+        tag = {"receipt": "receipt", "newsletter": f"newsletter/{slug}",
+               "notification": f"notify/{slug}", "person": f"contact/{slug}"}[kind]
+        rule = {"name": slug, "query": query, "tags": [tag]}
+        if len(accts) < len(accounts):
+            rule["accounts"] = accts
+        if folder:
+            rule["folder"] = folder
+        suggestions.append({"count": g["count"], "match": g["match"], "senders": g["addrs"],
+                            "accounts": accts, "looks_like": kind,
+                            "examples": [m["subject"] for m in sample], "rule": rule})
+
+    if args.json:
+        print(json.dumps(suggestions, indent=2))
+        return
+    if not suggestions:
+        print(f"No uncovered sender with {args.min}+ emails in the last {args.days} days.")
+        return
+    print(f"{len(suggestions)} suggestion(s) from the last {args.days} days (min {args.min} emails):\n")
+    for i, s in enumerate(suggestions, 1):
+        print(f"{i}. {s['match']}: {s['count']} emails in {', '.join(s['accounts'])}; looks like: {s['looks_like']}")
+        for ex in s["examples"]:
+            print(f"     e.g. {ex}")
+        print("   " + yaml.safe_dump([s["rule"]], sort_keys=False).replace("\n", "\n   ").rstrip())
+        print()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,8 @@
+# Only what the Dockerfile copies goes into the build: above all never .env, data/ (your mail,
+# tokens, logs, rules) or anything else private.
+*
+!config/
+!scripts/
+!docker/
+!LICENSE
+!NOTICE

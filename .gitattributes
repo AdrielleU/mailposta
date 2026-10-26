@@ -1,0 +1,2 @@
+# Scripts run inside a Linux container: keep Unix line endings even on Windows checkouts.
+* text=auto eol=lf

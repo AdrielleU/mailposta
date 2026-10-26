@@ -1,0 +1,25 @@
+# Which of your accounts are personal and which are business.
+# One entry per name in ACCOUNTS (.env). Every message automatically gets the tags:
+#   acct/<name>          e.g. acct/work
+#   personal | business  from `kind`
+#   biz/<slug>           for business accounts, from `business` (e.g. biz/acme-corp)
+#
+# Optional fields:
+#   label:    how reports should call the account
+#   business: the company/brand this account belongs to (business accounts)
+#   notes:    anything Claude should know (tone, who writes to it, what matters)
+#
+# Edit freely, then apply to existing mail with:  bin/mail --tool tag-mail --all
+
+accounts:
+  personal:
+    kind: personal
+    label: Personal Gmail
+  side:
+    kind: personal
+    label: Side Gmail
+  work:
+    kind: business
+    business: Acme Corp
+    label: Work (Outlook)
+    notes: Day job. Replies should be formal.

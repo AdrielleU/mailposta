@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Delete messages from the server AND the local mirror, by Message-ID.
+
+Dry run by default; pass --yes to actually delete. The server side moves the
+message to the account's trash folder (so it stays recoverable until the provider
+empties the trash); the local copies are removed afterwards. If the server
+step fails, nothing local is touched, so the command can simply be re-run.
+
+    delete-both --account <name> '<abc@example.com>' [...] [--yes]
+"""
+import argparse
+import email.parser
+import imaplib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def local_matches(account, message_ids):
+    parser = email.parser.BytesHeaderParser()
+    found = {}
+    for path in Path("/mail", account).glob("*/[cn][ue][rw]/*"):
+        with open(path, "rb") as f:
+            mid = (parser.parse(f).get("Message-ID") or "").strip()
+        if mid in message_ids:
+            found.setdefault(mid, []).append(path)
+    return found
+
+
+def quote(mailbox):
+    return '"' + mailbox.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def load_accounts():
+    # Resolved settings (with defaults) written by `configure` at container start.
+    path = Path.home() / ".config/emailassist/accounts.json"
+    return {a["name"]: a for a in json.loads(path.read_text())}
+
+
+def connect(a):
+    imap = imaplib.IMAP4_SSL(a["imap_host"], int(a["imap_port"]))
+    if a["type"] == "outlook":
+        token = subprocess.run(["oauth-token", a["name"]], check=True, capture_output=True, text=True).stdout.strip()
+        auth = f"user={a['address']}\x01auth=Bearer {token}\x01\x01"
+        imap.authenticate("XOAUTH2", lambda _: auth.encode())
+    else:
+        imap.login(a["address"], os.environ[f"{a['prefix']}_PASSWORD"])
+    return imap
+
+
+def remote_delete(a, message_ids, apply):
+    folders = [f.strip() for f in a["delete_folders"].split(",") if f.strip()]
+    trash = a["trash_folder"]
+    imap = connect(a)
+    caps = imap.capabilities
+    found = {}
+    try:
+        for folder in folders:
+            typ, _ = imap.select(quote(folder))
+            if typ != "OK":
+                print(f"  ! cannot open remote folder {folder!r}", file=sys.stderr)
+                continue
+            for mid in message_ids:
+                _, data = imap.uid("SEARCH", "HEADER", "Message-ID", quote(mid))
+                uids = data[0].split()
+                if not uids:
+                    continue
+                found.setdefault(mid, []).append(folder)
+                print(f"  remote: {mid} in {folder!r} (uid {b','.join(uids).decode()})")
+                if not apply:
+                    continue
+                uidset = b",".join(uids).decode()
+                if "MOVE" in caps:
+                    typ, resp = imap.uid("MOVE", uidset, quote(trash))
+                else:
+                    typ, resp = imap.uid("COPY", uidset, quote(trash))
+                    if typ == "OK":
+                        imap.uid("STORE", uidset, "+FLAGS.SILENT", r"(\Deleted)")
+                        if "UIDPLUS" in caps:
+                            imap.uid("EXPUNGE", uidset)
+                if typ != "OK":
+                    raise RuntimeError(f"moving {mid} to {trash!r} failed: {resp}")
+            imap.close()
+    finally:
+        imap.logout()
+    return found
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    accounts = load_accounts()
+    ap.add_argument("--account", required=True, choices=sorted(accounts))
+    ap.add_argument("message_ids", nargs="+", help="Message-ID header values, with angle brackets")
+    ap.add_argument("--yes", action="store_true", help="actually delete (default: dry run)")
+    args = ap.parse_args()
+    ids = {m if m.startswith("<") else f"<{m}>" for m in args.message_ids}
+
+    print(f"[{args.account}] " + ("DELETING" if args.yes else "DRY RUN (pass --yes to delete)"))
+    remote = remote_delete(accounts[args.account], ids, args.yes)
+    local = local_matches(args.account, ids)
+    for mid, paths in local.items():
+        for p in paths:
+            print(f"  local:  {mid} at {p}")
+            if args.yes:
+                p.unlink()
+    for mid in sorted(ids - remote.keys() - local.keys()):
+        print(f"  not found anywhere: {mid}")
+
+
+if __name__ == "__main__":
+    main()

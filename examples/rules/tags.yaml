@@ -1,0 +1,40 @@
+# Tag rules, applied to new mail after every sync (local only: the servers are never changed).
+#
+# Each rule:
+#   name:     short id (shown in run reports)
+#   query:    notmuch search query, e.g.
+#               from:alice@example.com     one sender
+#               from:example.com           anyone at that domain
+#               subject:invoice            subject word
+#               List:"news.example.com"    mailing list (List-Id header)
+#               to:billing@mybiz.com       sent to a specific address
+#             combine with and / or / not and parentheses.
+#   tags:     list of tags to add (lowercase; use "/" for groups, e.g. client/acme)
+#   accounts: optional, only these accounts (names from ACCOUNTS)
+#   kind:     optional, only personal or only business accounts
+#   folder:   optional, a SUGGESTED server folder/label for this mail. Never applied automatically;
+#             Claude only moves mail on the server when you ask it to "organize".
+#
+# Get suggestions from your actual mail:  bin/mail --tool suggest-rules
+# After editing, apply to existing mail:  bin/mail --tool tag-mail --all
+
+rules:
+  - name: receipts
+    query: subject:receipt or subject:invoice or subject:"order confirmation" or subject:"your order"
+    tags: [receipt]
+    folder: Receipts
+
+  - name: security
+    query: subject:"security alert" or subject:"new sign-in" or subject:"verification code" or subject:"password reset"
+    tags: [security]
+
+  - name: calendar
+    query: subject:invitation or subject:"updated invitation" or mimetype:text/calendar
+    tags: [calendar]
+
+  # Example business rule (edit or delete):
+  # - name: client-globex
+  #   query: from:globex.com
+  #   tags: [client/globex]
+  #   kind: business
+  #   folder: Clients/Globex

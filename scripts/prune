@@ -1,0 +1,10 @@
+#!/bin/sh
+# Deletes local copies older than RETENTION_DAYS (by server arrival date, see
+# CopyArrivalDate in the mbsync config). Local only: mbsync never pushes deletions.
+#   prune            all accounts
+#   prune <account>  just /mail/<account>
+set -eu
+days="${RETENTION_DAYS:-60}"
+dir="/mail${1:+/$1}"
+count=$(find "$dir" -type f \( -path '*/cur/*' -o -path '*/new/*' \) -mtime "+$days" -print -delete | wc -l)
+echo "[$(date -Is)] prune ${1:-all}: removed $count local messages older than $days days"

@@ -1,0 +1,589 @@
+#!/usr/bin/env python3
+"""MailPostA web UI: a read-only browser view of the local copies, tags, run reports, logs and rules.
+
+Runs in its own container (docker-compose.yml, service web) with every folder mounted read-only and no
+secrets in its environment; Caddy (service login) shares its network and asks for the password first.
+There is no code here that changes, sends or deletes anything. Emails are shown as plain text (HTML mail is
+converted, never rendered), so no remote images, trackers or scripts load.
+
+Listens on 127.0.0.1:8080, which only Caddy can reach.
+"""
+import base64
+import email
+import email.parser
+import email.policy
+import html
+import json
+import os
+import re
+import subprocess
+import threading
+import urllib.parse
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import yaml
+
+MAIL, LOGS, RULES, INDEX = Path("/mail"), Path("/logs"), Path("/rules"), Path("/index")
+PAGE_SIZE = 50
+LOG_NAME = re.compile(r"(sync|runs|audit)-\d{4}-\d{2}-\d{2}\.(log|jsonl)")
+NOTMUCH_ENV = dict(os.environ, NOTMUCH_CONFIG="/tmp/notmuch-config")
+
+# ---------------------------------------------------------------- data access (read-only)
+
+_cache, _cache_lock = {}, threading.Lock()
+
+
+def account_meta():
+    try:
+        return (yaml.safe_load((RULES / "accounts.yaml").read_text()) or {}).get("accounts") or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+
+
+def accounts():
+    meta = account_meta()
+    found = [d.name for d in MAIL.iterdir() if d.is_dir() and not d.name.startswith(".")] if MAIL.exists() else []
+    return sorted(found, key=lambda n: (list(meta).index(n) if n in meta else len(meta), n))
+
+
+def folders(acct):
+    base = MAIL / acct
+    names = [d.name for d in base.iterdir() if (d / "cur").is_dir()] if base.exists() else []
+    return sorted(names, key=lambda n: (n != "INBOX", n.lower()))
+
+
+def msg_id(path):
+    return base64.urlsafe_b64encode(str(path.relative_to(MAIL)).encode()).decode().rstrip("=")
+
+
+def msg_path(token):
+    """Decode a message token, refusing anything outside /mail/<acct>/<folder>/{cur,new}/."""
+    try:
+        rel = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode()
+    except (ValueError, UnicodeDecodeError):
+        return None
+    path = (MAIL / rel).resolve()
+    if path.parent.name not in ("cur", "new") or MAIL.resolve() not in path.parents or not path.is_file():
+        return None
+    return path
+
+
+def header(h, name):
+    try:
+        return str(h.get(name) or "")
+    except Exception:  # malformed header: show nothing rather than fail the page
+        return ""
+
+
+def summary(acct, folder, path):
+    st = path.stat()
+    key = str(path)
+    with _cache_lock:
+        hit = _cache.get(key)
+    if hit and hit[0] == st.st_mtime_ns:
+        return hit[1]
+    with open(path, "rb") as f:
+        h = email.parser.BytesHeaderParser(policy=email.policy.default).parse(f)
+    flags = path.name.rsplit(":2,", 1)[1] if ":2," in path.name else ""
+    s = {"id": msg_id(path), "acct": acct, "folder": folder, "path": key,
+         "from": header(h, "From"), "to": header(h, "To"), "subject": header(h, "Subject") or "(no subject)",
+         "time": st.st_mtime, "unread": "S" not in flags, "flagged": "F" in flags, "replied": "R" in flags}
+    with _cache_lock:
+        if len(_cache) > 100_000:
+            _cache.clear()
+        _cache[key] = (st.st_mtime_ns, s)
+    return s
+
+
+def list_messages(acct=None, folder=None, q="", tag=""):
+    only = notmuch_files(tag) if tag else None
+    words = q.lower().split()
+    out = []
+    for a in accounts():
+        if acct and a != acct:
+            continue
+        for fo in folders(a):
+            if folder and fo != folder:
+                continue
+            for sub in ("cur", "new"):
+                d = MAIL / a / fo / sub
+                for p in d.iterdir() if d.is_dir() else []:
+                    if only is not None and str(p) not in only:
+                        continue
+                    try:
+                        s = summary(a, fo, p)
+                    except OSError:  # pruned or renamed mid-listing
+                        continue
+                    hay = f"{s['from']} {s['to']} {s['subject']}".lower()
+                    if all(w in hay for w in words):
+                        out.append(s)
+    out.sort(key=lambda s: -s["time"])
+    return out
+
+
+def notmuch(*args):
+    try:
+        r = subprocess.run(["notmuch", *args], capture_output=True, text=True, env=NOTMUCH_ENV, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def notmuch_tags():
+    out = notmuch("search", "--output=tags", "*")
+    return [t for t in (out or "").split("\n") if t]
+
+
+def notmuch_files(tag):
+    out = notmuch("search", "--output=files", "--", f"tag:{tag}")
+    return set((out or "").split("\n")) - {""}
+
+
+def message_tags(message_id):
+    if not message_id:
+        return []
+    out = notmuch("search", "--output=tags", "--", f"id:{message_id.strip('<>')}")
+    return [t for t in (out or "").split("\n") if t]
+
+
+class _Text(HTMLParser):
+    """HTML mail -> readable text. Nothing from the HTML is ever sent to the browser as markup."""
+    BLOCK = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "blockquote"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.skip = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "head"):
+            self.skip += 1
+        elif tag in self.BLOCK:
+            self.parts.append("\n")
+        elif tag == "a":
+            href = dict(attrs).get("href") or ""
+            if href.startswith(("http://", "https://", "mailto:")):
+                self.parts.append(f" [{href}] ")
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "head"):
+            self.skip = max(0, self.skip - 1)
+        elif tag in self.BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.parts.append(data)
+
+    def text(self):
+        return re.sub(r"\n\s*\n\s*\n+", "\n\n", re.sub(r"[ \t]+", " ", "".join(self.parts))).strip()
+
+
+def parse_message(path):
+    with open(path, "rb") as f:
+        m = email.message_from_binary_file(f, policy=email.policy.default)
+    body, converted = "", False
+    try:
+        part = m.get_body(preferencelist=("plain", "html"))
+        if part is not None:
+            body = part.get_content()
+            if part.get_content_type() == "text/html":
+                p = _Text()
+                p.feed(body)
+                body, converted = p.text(), True
+    except (KeyError, LookupError, ValueError):
+        body = "(this message's body could not be decoded: use Raw to see it)"
+    attachments = []
+    for part in m.iter_attachments():
+        attachments.append({"name": part.get_filename() or "attachment",
+                            "type": part.get_content_type(),
+                            "size": len(part.get_payload(decode=True) or b"")})
+    return m, body, converted, attachments
+
+
+def attachment(path, n):
+    with open(path, "rb") as f:
+        m = email.message_from_binary_file(f, policy=email.policy.default)
+    for i, part in enumerate(m.iter_attachments()):
+        if i == n:
+            return part.get_filename() or "attachment", part.get_payload(decode=True) or b""
+    return None
+
+
+def run_reports(days=7):
+    files = sorted(LOGS.glob("runs-*.jsonl"), reverse=True)[:days] if LOGS.exists() else []
+    runs = []
+    for f in files:
+        for line in f.read_text().splitlines():
+            try:
+                runs.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    runs.sort(key=lambda r: r.get("time", ""), reverse=True)
+    return runs
+
+
+# ---------------------------------------------------------------- rendering
+
+e = html.escape
+
+
+def when(ts):
+    d = datetime.fromtimestamp(ts).astimezone()
+    now = datetime.now().astimezone()
+    if d.date() == now.date():
+        return d.strftime("%-I:%M %p")
+    return d.strftime("%b %-d" if d.year == now.year else "%b %-d, %Y")
+
+
+def size(n):
+    return f"{n} B" if n < 1024 else f"{n / 1024:.0f} KB" if n < 1024 ** 2 else f"{n / 1024 ** 2:.1f} MB"
+
+
+def url(path, **params):
+    params = {k: v for k, v in params.items() if v not in (None, "", 0)}
+    return path + ("?" + urllib.parse.urlencode(params) if params else "")
+
+
+def copy_button(label, *, text=None, target=None):
+    attr = f'data-copy-text="{e(text)}"' if text is not None else f'data-copy-from="{e(target)}"'
+    return f'<button type="button" class="btn" {attr}>{e(label)}</button>'
+
+
+def sidebar(cur_acct=None, cur_folder=None, cur_tag=None):
+    meta = account_meta()
+    out = ['<nav class="side">', f'<a class="side-all{" on" if not (cur_acct or cur_tag) else ""}" href="/m">All mail</a>']
+    groups = {}
+    for a in accounts():
+        groups.setdefault((meta.get(a) or {}).get("kind", "other"), []).append(a)
+    for kind in ("business", "personal", "other"):
+        if kind not in groups:
+            continue
+        out.append(f'<h3>{e(kind.title())}</h3>')
+        for a in groups[kind]:
+            label = (meta.get(a) or {}).get("label") or a
+            on = " on" if a == cur_acct and not cur_folder else ""
+            out.append(f'<a class="acct{on}" href="{url("/m", acct=a)}">{e(label)}</a>')
+            if a == cur_acct:
+                for fo in folders(a):
+                    on = " on" if fo == cur_folder else ""
+                    out.append(f'<a class="fold{on}" href="{url("/m", acct=a, folder=fo)}">{e(fo)}</a>')
+    tags = notmuch_tags()
+    if tags:
+        out.append("<h3>Tags</h3>")
+        for t in tags:
+            if t.startswith("acct/") or t in ("personal", "business", "new"):
+                continue
+            on = " on" if t == cur_tag else ""
+            out.append(f'<a class="tag{on}" href="{url("/m", tag=t)}">{e(t)}</a>')
+    out.append("</nav>")
+    return "\n".join(out)
+
+
+def page(title, body, side=""):
+    nav = "".join(f'<a href="{h}">{n}</a>' for h, n in
+                  (("/", "Overview"), ("/m", "Mail"), ("/runs", "Run reports"), ("/logs", "Logs"), ("/rules", "Rules")))
+    layout = f'<div class="layout">{side}<main>{body}</main></div>' if side else f"<main class=\"wide\">{body}</main>"
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{e(title)} · MailPostA</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><header class="top"><a class="brand" href="/">MailPostA</a><nav class="topnav">{nav}</nav>
+<span class="ro">read-only</span></header>{layout}<script src="/static/app.js"></script></body></html>"""
+
+
+def view_overview():
+    meta = account_meta()
+    runs = run_reports(2)
+    last = runs[0] if runs else None
+    by_acct = {a["account"]: a for a in (last or {}).get("accounts", [])}
+    cards = []
+    for a in accounts():
+        m = meta.get(a) or {}
+        msgs = list_messages(acct=a)
+        unread = sum(s["unread"] for s in msgs)
+        r = by_acct.get(a)
+        status = (f'<span class="pill {"ok" if r["status"] == "ok" else "bad"}">{e(r["status"].upper())}</span>'
+                  if r else '<span class="pill">no report</span>')
+        sub = " · ".join(x for x in (m.get("kind", ""), m.get("business", "")) if x)
+        err = f'<p class="err">{e(r["error"])}</p>' if r and r.get("error") else ""
+        cards.append(f"""<a class="card" href="{url('/m', acct=a)}"><div class="card-h"><b>{e(m.get('label') or a)}</b>{status}</div>
+<div class="muted">{e(a)}{' · ' + e(sub) if sub else ''}</div>
+<div class="stats"><span><b>{len(msgs)}</b> messages</span><span><b>{unread}</b> unread</span>
+<span><b>{len(folders(a))}</b> folders</span></div>{err}</a>""")
+    when_txt = f'Last sync run {e(last["time"])} ({e(last["status"])})' if last else "No sync runs yet"
+    body = f"<h1>Overview</h1><p class=\"muted\">{when_txt}</p><div class=\"cards\">{''.join(cards) or '<p>No mail synced yet.</p>'}</div>"
+    return page("Overview", body)
+
+
+def view_list(params):
+    acct, folder = params.get("acct", ""), params.get("folder", "")
+    q, tag = params.get("q", ""), params.get("tag", "")
+    pg = max(1, int(params.get("page", "1") or 1)) if params.get("page", "1").isdigit() else 1
+    msgs = list_messages(acct or None, folder or None, q, tag)
+    total = len(msgs)
+    chunk = msgs[(pg - 1) * PAGE_SIZE: pg * PAGE_SIZE]
+    rows = []
+    for s in chunk:
+        cls = " unread" if s["unread"] else ""
+        marks = ("★" if s["flagged"] else "") + ("↩" if s["replied"] else "")
+        where = "" if acct else f'<span class="chip">{e(s["acct"])}</span>'
+        rows.append(f"""<a class="row{cls}" href="/v/{s['id']}"><span class="from">{e(s['from'])}</span>
+<span class="subj">{where}{e(s['subject'])}</span><span class="marks">{marks}</span><span class="date">{when(s['time'])}</span></a>""")
+    scope = tag and f"tag:{tag}" or (f"{acct} / {folder}" if folder else acct) or "All mail"
+    pager = []
+    if pg > 1:
+        pager.append(f'<a class="btn" href="{url("/m", acct=acct, folder=folder, q=q, tag=tag, page=pg - 1)}">← Newer</a>')
+    if pg * PAGE_SIZE < total:
+        pager.append(f'<a class="btn" href="{url("/m", acct=acct, folder=folder, q=q, tag=tag, page=pg + 1)}">Older →</a>')
+    hidden = "".join(f'<input type="hidden" name="{k}" value="{e(v)}">' for k, v in
+                     (("acct", acct), ("folder", folder), ("tag", tag)) if v)
+    body = f"""<div class="bar"><h1>{e(scope)}</h1>
+<form class="search" method="get" action="/m">{hidden}<input type="search" name="q" value="{e(q)}" placeholder="Search sender, recipient, subject">
+<button class="btn">Search</button></form></div>
+<p class="muted">{total} message{'s' if total != 1 else ''}{f' matching “{e(q)}”' if q else ''}</p>
+<div class="list">{''.join(rows) or '<p class="empty">Nothing here.</p>'}</div><div class="pager">{''.join(pager)}</div>"""
+    return page(scope, body, sidebar(acct or None, folder or None, tag or None))
+
+
+def view_message(token):
+    path = msg_path(token)
+    if not path:
+        return None
+    acct, folder = path.relative_to(MAIL).parts[:2]
+    m, body, converted, atts = parse_message(path)
+    mid = header(m, "Message-ID")
+    fields = [("From", header(m, "From")), ("To", header(m, "To")), ("Cc", header(m, "Cc")),
+              ("Date", header(m, "Date")), ("Subject", header(m, "Subject")), ("Message-ID", mid)]
+    head_text = "\n".join(f"{k}: {v}" for k, v in fields if v)
+    rows = "".join(f"<tr><th>{k}</th><td>{e(v)}</td></tr>" for k, v in fields if v)
+    tags = message_tags(mid)
+    tag_html = " ".join(f'<a class="chip" href="{url("/m", tag=t)}">{e(t)}</a>' for t in tags)
+    att_html = ""
+    if atts:
+        items = "".join(f'<li><a href="/att/{token}/{i}">{e(a["name"])}</a> <span class="muted">{e(a["type"])}, {size(a["size"])}</span></li>'
+                        for i, a in enumerate(atts))
+        att_html = f'<h3>Attachments</h3><ul class="atts">{items}</ul>'
+    note = '<p class="muted">Converted from HTML to plain text. Use Raw for the original.</p>' if converted else ""
+    actions = " ".join([copy_button("Copy body", target="#body"),
+                        copy_button("Copy headers + body", text=head_text + "\n\n" + body),
+                        copy_button("Copy Message-ID", text=mid) if mid else "",
+                        f'<a class="btn" href="/raw/{token}">Raw</a>',
+                        f'<a class="btn" href="/raw/{token}?download=1">Download .eml</a>'])
+    body_html = f"""<div class="bar"><h1>{e(header(m, 'Subject') or '(no subject)')}</h1></div>
+<p class="muted"><a href="{url('/m', acct=acct)}">{e(acct)}</a> / <a href="{url('/m', acct=acct, folder=folder)}">{e(folder)}</a> {tag_html}</p>
+<table class="heads">{rows}</table><div class="actions">{actions}</div>{note}
+<pre id="body" class="body">{e(body)}</pre>{att_html}"""
+    return page(header(m, "Subject") or "Message", body_html, sidebar(acct, folder))
+
+
+def view_runs():
+    runs = run_reports(7)
+    rows = []
+    for r in runs[:300]:
+        accts = "".join(
+            f'<div class="{"bad" if a["status"] != "ok" else ""}"><b>{e(a["account"])}</b> '
+            f'+{a["new"]} new, −{a["removed_on_server"]} server, −{a["pruned"]} pruned, {a["local_total"]} kept'
+            f'{" · " + e(a["error"]) if a.get("error") else ""}</div>' for a in r.get("accounts", []))
+        t = r.get("tagging") or {}
+        tags = ", ".join(f"{e(k)} +{v}" for k, v in (t.get("tagged") or {}).items())
+        tag_txt = f'{t.get("indexed", 0)} indexed{"; " + tags if tags else ""}' if t else ""
+        rows.append(f'<tr><td>{e(r.get("time", ""))}</td><td><span class="pill {"ok" if r.get("status") == "ok" else "bad"}">'
+                    f'{e(r.get("status", "?").upper())}</span></td><td>{accts}</td><td>{tag_txt}</td></tr>')
+    raw = "\n".join(json.dumps(r) for r in runs[:300])
+    body = f"""<div class="bar"><h1>Run reports</h1>{copy_button("Copy as JSON lines", text=raw) if runs else ""}</div>
+<p class="muted">Last 7 days, newest first.</p>
+<table class="grid"><tr><th>Time</th><th>Status</th><th>Accounts</th><th>Tags</th></tr>{''.join(rows) or '<tr><td colspan="4">No runs yet.</td></tr>'}</table>"""
+    return page("Run reports", body)
+
+
+def view_logs(name=None):
+    if name is None:
+        files = sorted((f for f in LOGS.iterdir() if LOG_NAME.fullmatch(f.name)), key=lambda f: f.name, reverse=True) \
+            if LOGS.exists() else []
+        rows = "".join(f'<tr><td><a href="/logs/{e(f.name)}">{e(f.name)}</a></td><td>{size(f.stat().st_size)}</td></tr>' for f in files)
+        body = f'<h1>Logs</h1><p class="muted">Kept for LOG_RETENTION_DAYS (30 by default).</p><table class="grid"><tr><th>File</th><th>Size</th></tr>{rows}</table>'
+        return page("Logs", body)
+    if not LOG_NAME.fullmatch(name) or not (LOGS / name).is_file():
+        return None
+    lines = (LOGS / name).read_text(errors="replace").splitlines()
+    shown = lines[-3000:]
+    note = f'<p class="muted">Showing the last {len(shown)} of {len(lines)} lines.</p>' if len(lines) > len(shown) else ""
+    body = f"""<div class="bar"><h1>{e(name)}</h1>{copy_button("Copy", target="#log")}</div>{note}
+<pre id="log" class="body">{e(chr(10).join(shown))}</pre>"""
+    return page(name, body)
+
+
+def view_rules():
+    parts = ['<h1>Rules</h1><p class="muted">From <code>data/rules/</code>. Edit them there (or ask Claude); this page is read-only.</p>']
+    for name in ("accounts.yaml", "tags.yaml"):
+        f = RULES / name
+        text = f.read_text(errors="replace") if f.is_file() else "(missing)"
+        ident = name.replace(".", "-")
+        parts.append(f'<div class="bar"><h2>{name}</h2>{copy_button("Copy", target="#" + ident)}</div><pre id="{ident}" class="body">{e(text)}</pre>')
+    return page("Rules", "".join(parts))
+
+
+# ---------------------------------------------------------------- static files
+
+CSS = """
+:root{--bg:#f7f7f5;--panel:#fff;--text:#1d1d1b;--muted:#6b6b66;--line:#e4e3df;--accent:#2f5fd0;--accent-bg:#e8eefc;
+--ok:#1f7a3d;--ok-bg:#e3f4e8;--bad:#b42318;--bad-bg:#fde8e6;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--panel:#1d1d1b;--text:#ecebe6;--muted:#9b9a94;--line:#2e2d2a;
+--accent:#8aa9ff;--accent-bg:#22293d;--ok:#6fd08f;--ok-bg:#16301f;--bad:#ff8b7e;--bad-bg:#3a1a17}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.top{display:flex;align-items:center;gap:20px;padding:10px 20px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:2}
+.brand{font-weight:700;color:var(--text)}.topnav{display:flex;gap:16px;flex-wrap:wrap}.topnav a{color:var(--muted)}
+.ro{margin-left:auto;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:2px 10px}
+.layout{display:grid;grid-template-columns:230px minmax(0,1fr)}main{padding:20px;min-width:0}main.wide{max-width:1200px;margin:0 auto}
+.side{padding:16px 10px;border-right:1px solid var(--line);min-height:calc(100vh - 45px);display:flex;flex-direction:column;gap:2px}
+.side h3{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:14px 8px 4px}
+.side a{padding:5px 8px;border-radius:6px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side a.on{background:var(--accent-bg);color:var(--accent);font-weight:600}.side .fold{padding-left:22px;font-size:14px;color:var(--muted)}
+.side .tag{font-family:var(--mono);font-size:13px}
+h1{font-size:22px;margin:0}h2{font-size:17px;margin:18px 0 8px}h3{font-size:15px;margin:18px 0 6px}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.muted{color:var(--muted)}.err{color:var(--bad);font-size:13px;margin:6px 0 0}
+.search{display:flex;gap:6px}.search input{width:min(340px,60vw);padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:inherit}
+.btn{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:inherit;font-size:14px;cursor:pointer}
+.btn:hover{border-color:var(--accent);text-decoration:none}
+.list{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.row{display:grid;grid-template-columns:220px minmax(0,1fr) 36px 80px;gap:12px;padding:9px 14px;border-bottom:1px solid var(--line);color:var(--text)}
+.row:last-child{border-bottom:0}.row:hover{background:var(--accent-bg);text-decoration:none}
+.row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.row.unread{font-weight:650}
+.date,.marks{color:var(--muted);text-align:right;font-size:13px}
+.chip{display:inline-block;font-size:12px;font-weight:500;padding:1px 8px;margin-right:6px;border-radius:99px;background:var(--accent-bg);color:var(--accent)}
+.pager{display:flex;gap:8px;margin-top:12px}.empty{padding:20px;color:var(--muted)}
+.heads{border-collapse:collapse;margin:10px 0}.heads th{text-align:left;color:var(--muted);font-weight:500;padding:2px 14px 2px 0;vertical-align:top}
+.heads td{padding:2px 0;word-break:break-word}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.body{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;white-space:pre-wrap;word-break:break-word;font:14px/1.5 var(--mono);margin:8px 0}
+.atts{padding-left:18px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;color:var(--text)}.card:hover{border-color:var(--accent);text-decoration:none}
+.card-h{display:flex;justify-content:space-between;align-items:center;gap:8px}.stats{display:flex;gap:14px;margin-top:10px;font-size:14px;color:var(--muted)}
+.stats b{color:var(--text)}
+.pill{font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--line);color:var(--muted)}
+.pill.ok{background:var(--ok-bg);color:var(--ok)}.pill.bad{background:var(--bad-bg);color:var(--bad)}
+.grid{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:14px}
+.grid th,.grid td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}.grid .bad{color:var(--bad)}
+code{font-family:var(--mono);font-size:.92em}
+@media (max-width:760px){.layout{grid-template-columns:1fr}.side{min-height:0;border-right:0;border-bottom:1px solid var(--line)}
+.row{grid-template-columns:minmax(0,1fr) 70px}.row .subj{grid-column:1/-1;order:3}.row .marks{display:none}main{padding:16px}
+.top{gap:12px;padding:10px 16px}.ro{display:none}}
+"""
+
+JS = """
+function copyText(t){
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(t);
+  // Plain-HTTP fallback (the clipboard API needs HTTPS or localhost)
+  const ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); } finally { ta.remove(); }
+  return Promise.resolve();
+}
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-copy-text],[data-copy-from]');
+  if (!b) return;
+  const text = b.dataset.copyFrom ? document.querySelector(b.dataset.copyFrom).innerText : b.dataset.copyText;
+  copyText(text).then(() => { const old = b.textContent; b.textContent = 'Copied'; setTimeout(() => b.textContent = old, 1200); });
+});
+"""
+
+# ---------------------------------------------------------------- server
+
+SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; "
+                               "form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "mailposta"
+    sys_version = ""
+
+    def send(self, status, body, ctype="text/html; charset=utf-8", extra=None):
+        data = body.encode() if isinstance(body, str) else body
+        self.send_response(status)
+        for k, v in {**SECURITY_HEADERS, "Content-Type": ctype, "Content-Length": str(len(data)), **(extra or {})}.items():
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_GET(self):
+        u = urllib.parse.urlsplit(self.path)
+        params = dict(urllib.parse.parse_qsl(u.query))
+        p = u.path
+        try:
+            if p == "/":
+                return self.send(200, view_overview())
+            if p == "/m":
+                return self.send(200, view_list(params))
+            if p.startswith("/v/"):
+                out = view_message(p[3:])
+                return self.send(200, out) if out else self.not_found()
+            if p.startswith("/raw/"):
+                path = msg_path(p[5:])
+                if not path:
+                    return self.not_found()
+                extra = {"Content-Disposition": 'attachment; filename="message.eml"'} if params.get("download") else {}
+                return self.send(200, path.read_bytes(), "text/plain; charset=utf-8", extra)
+            if p.startswith("/att/"):
+                token, _, n = p[5:].partition("/")
+                path = msg_path(token)
+                found = attachment(path, int(n)) if path and n.isdigit() else None
+                if not found:
+                    return self.not_found()
+                name = re.sub(r"[^\w.\- ]+", "_", found[0])[:150] or "attachment"
+                return self.send(200, found[1], "application/octet-stream",
+                                 {"Content-Disposition": f'attachment; filename="{name}"'})
+            if p == "/runs":
+                return self.send(200, view_runs())
+            if p == "/logs":
+                return self.send(200, view_logs())
+            if p.startswith("/logs/"):
+                out = view_logs(p[6:])
+                return self.send(200, out) if out else self.not_found()
+            if p == "/rules":
+                return self.send(200, view_rules())
+            if p == "/static/app.css":
+                return self.send(200, CSS, "text/css; charset=utf-8")
+            if p == "/static/app.js":
+                return self.send(200, JS, "text/javascript; charset=utf-8")
+            return self.not_found()
+        except Exception as exc:  # show a plain error page rather than dropping the connection
+            self.log_error("error on %s: %r", p, exc)
+            return self.send(500, page("Error", f"<h1>Something went wrong</h1><pre class=\"body\">{e(repr(exc))}</pre>"))
+
+    def not_found(self):
+        self.send(404, page("Not found", '<h1>Not found</h1><p><a href="/">Back to the overview</a></p>'))
+
+    def do_POST(self):
+        self.send(405, "read-only", "text/plain")
+
+    do_PUT = do_DELETE = do_PATCH = do_POST
+
+    def log_message(self, fmt, *args):
+        # Paths only (no query strings: searches can contain email content).
+        print(f"[{datetime.now().astimezone().isoformat(timespec='seconds')}] {self.command} "
+              f"{urllib.parse.urlsplit(self.path).path} {args[1] if len(args) > 1 else ''}", flush=True)
+
+
+def main():
+    Path("/tmp/notmuch-config").write_text(f"[database]\npath={INDEX}\nmail_root={MAIL}\n")
+    server = ThreadingHTTPServer(("127.0.0.1", 8080), Handler)
+    print("MailPostA web UI on 127.0.0.1:8080 (behind the Caddy login)", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

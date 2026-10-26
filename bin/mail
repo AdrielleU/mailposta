@@ -1,0 +1,69 @@
+#!/bin/sh
+# Run himalaya inside the running container, e.g.:
+#   bin/mail envelope list                       (default account, local copy)
+#   bin/mail -a personal-cloud envelope search from bob   (live server)
+#   bin/mail -a work envelope list               (work, local copy)
+#   bin/mail -a personal-cloud message compose -t bob@x.y -s Hi --body "..." --save drafts
+#   bin/mail --tool delete-both --account personal '<id@x>'   (dry run; add --yes)
+#   bin/mail --tool prune
+#   bin/mail --tool oauth-token login work        (one-time Microsoft sign-in)
+#   bin/mail --tool notmuch search tag:receipt and date:7d..   (local tags/search)
+#   bin/mail --tool suggest-rules                 (rule ideas from repeated senders)
+#   bin/mail --tool tag-mail --all                (re-apply data/rules to all mail)
+#
+# Sending is disabled on purpose: there's no SMTP config, and this wrapper also
+# refuses anything that looks like a send.
+#
+# Every call is recorded in data/logs/audit-YYYY-MM-DD.log (who, what, result).
+set -eu
+engine="${CONTAINER_ENGINE:-$(command -v podman >/dev/null && echo podman || echo docker)}"
+tty=""; [ -t 0 ] && [ -t 1 ] && tty="-t"
+logdir="$(cd "$(dirname "$0")/.." && pwd)/data/logs"
+caller=terminal; [ -n "${CLAUDECODE:-}" ] && caller=claude
+
+# Shell-quoted copy of the original arguments, for the audit log.
+cmdline=""
+for arg in "$@"; do
+  cmdline="$cmdline '$(printf %s "$arg" | sed "s/'/'\\\\''/g")'"
+done
+
+audit() {
+  mkdir -p "$logdir"
+  printf '%s caller=%s result=%s cmd=%s\n' "$(date -Iseconds)" "$caller" "$1" \
+    "$(printf %s "${cmdline# }" | tr '\n' ' ' | cut -c1-500)" >> "$logdir/audit-$(date +%F).log"
+}
+refuse() { audit refused; echo "bin/mail: refused: $1 (this setup is drafts-only)" >&2; exit 2; }
+run() {
+  status=0
+  "$engine" exec -i $tty mailposta-mail "$@" || status=$?
+  audit "exit:$status"
+  exit "$status"
+}
+
+if [ "${1:-}" = "--tool" ]; then
+  shift
+  case "${1:-}" in
+    delete-both|prune|tag-mail|suggest-rules) ;;
+    # notmuch: search/read and local tagging only (no insert, reindex, config...).
+    notmuch)
+      case "${2:-}" in
+        search|show|count|address|tag) ;;
+        *) refuse "notmuch only allows search, show, count, address, tag" ;;
+      esac ;;
+    # Only the interactive login; printing a raw access token is not allowed.
+    oauth-token) [ "${2:-}" = login ] || refuse "oauth-token only supports 'login <account>'" ;;
+    *) refuse "--tool only runs delete-both, prune, tag-mail, suggest-rules, notmuch or 'oauth-token login'" ;;
+  esac
+  run "$@"
+fi
+
+prev=""
+for arg in "$@"; do
+  case "$arg" in
+    --send|--send=*) refuse "--send" ;;
+    smtp) refuse "smtp commands" ;;
+    send) case "$prev" in message|msg) refuse "message send" ;; esac ;;
+  esac
+  prev="$arg"
+done
+run himalaya "$@"

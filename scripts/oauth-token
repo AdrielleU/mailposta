@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""OAuth2 access tokens for Microsoft 365 IMAP, via the device-code flow.
+
+    oauth-token login work   one-time, interactive: prints a code to enter at
+                             https://microsoft.com/devicelogin
+    oauth-token work         prints a valid access token, refreshing it when
+                             needed (this is what mbsync and himalaya call)
+
+The scope is IMAP only, so these tokens cannot send mail. The refresh token is
+stored in /state/oauth/<account>.json (mode 600).
+"""
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+STORE = Path("/state/oauth")
+SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
+
+
+def endpoints(account):
+    # Resolved settings (with defaults) written by `configure` at container start.
+    accounts = json.loads((Path.home() / ".config/emailassist/accounts.json").read_text())
+    match = [a for a in accounts if a["name"] == account and a["type"] == "outlook"]
+    if not match:
+        sys.exit(f"{account!r} is not an outlook account in ACCOUNTS")
+    a = match[0]
+    return f"https://login.microsoftonline.com/{a['oauth_tenant']}/oauth2/v2.0", a["oauth_client_id"]
+
+
+def post(url, data):
+    req = urllib.request.Request(url, urllib.parse.urlencode(data).encode())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        return json.load(e)
+
+
+def save(account, token):
+    STORE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    token["expires_at"] = time.time() + int(token["expires_in"]) - 120
+    # Write-then-rename: mbsync and himalaya may refresh at the same time.
+    tmp = STORE / f".{account}.json.{os.getpid()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(token, f)
+    os.replace(tmp, STORE / f"{account}.json")
+
+
+def login(account):
+    base, client_id = endpoints(account)
+    dc = post(f"{base}/devicecode", {"client_id": client_id, "scope": SCOPE})
+    if "device_code" not in dc:
+        sys.exit(f"device code request failed: {dc.get('error_description', dc)}")
+    print(dc["message"], file=sys.stderr, flush=True)
+    interval = int(dc.get("interval", 5))
+    deadline = time.time() + int(dc["expires_in"])
+    while time.time() < deadline:
+        time.sleep(interval)
+        token = post(f"{base}/token", {
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "client_id": client_id,
+            "device_code": dc["device_code"],
+        })
+        if "access_token" in token:
+            save(account, token)
+            print(f"logged in; token stored for {account!r}", file=sys.stderr)
+            return
+        error = token.get("error")
+        if error == "slow_down":
+            interval += 5
+        elif error != "authorization_pending":
+            sys.exit(f"login failed: {token.get('error_description', error)}")
+    sys.exit("login timed out, run it again")
+
+
+def access_token(account):
+    base, client_id = endpoints(account)
+    path = STORE / f"{account}.json"
+    relogin = f"run `bin/mail --tool oauth-token login {account}`"
+    if not path.exists():
+        sys.exit(f"no token for {account!r}: {relogin}")
+    token = json.loads(path.read_text())
+    if time.time() >= token["expires_at"]:
+        new = post(f"{base}/token", {
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "refresh_token": token["refresh_token"],
+            "scope": SCOPE,
+        })
+        if "access_token" not in new:
+            sys.exit(f"token refresh failed ({new.get('error')}): {relogin}")
+        new.setdefault("refresh_token", token["refresh_token"])
+        save(account, new)
+        token = new
+    print(token["access_token"])
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) == 2 and args[0] == "login":
+        login(args[1])
+    elif len(args) == 1 and args[0] != "login":
+        access_token(args[0])
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

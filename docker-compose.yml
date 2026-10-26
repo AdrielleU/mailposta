@@ -1,0 +1,95 @@
+# MailPostA (mailposta): email sync for Claude Code (mail), plus a read-only web UI (web) behind a login (login, Caddy).
+#
+#   cp .env.example .env    # then fill in your accounts and the web UI login (see .env.example)
+#   docker compose up -d --build        # Podman: podman-compose up -d --build
+#   bin/mail --tool oauth-token login <outlook-account>    # once per Outlook account
+# then open http://127.0.0.1:17203 and log in with MAILPOSTA_LOGIN_USER and your password.
+#
+# Linux or macOS. On Windows, WSL2 is required: run everything inside WSL (Ubuntu) with Docker Desktop's
+# WSL integration, and keep the project in the Linux filesystem (~/emailassist, not /mnt/c/...). Maildir
+# file names contain ":", which Windows drives (NTFS) can't store.
+#
+# Data (bind mounts, all git-ignored; back up data/ and that's everything):
+#   data/mail    local copies (Maildir), last RETENTION_DAYS days
+#   data/state   sync state and Outlook sign-in tokens (only the mail service sees this)
+#   data/index   notmuch tag/search index
+#   data/logs    sync logs, run reports, bin/mail audit log (kept LOG_RETENTION_DAYS)
+#   data/rules   your account kinds and tag rules
+# The ":z" on each mount relabels it for SELinux (RHEL/Fedora with podman) so both containers can read it.
+name: mailposta
+
+services:
+  mail:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        HIMALAYA_VERSION: v2.2.1
+    image: localhost/mailposta:latest
+    container_name: mailposta-mail
+    env_file: .env
+    init: true
+    # Default bridge: avoids a per-project network (and aardvark-dns on podman).
+    network_mode: bridge
+    restart: unless-stopped
+    volumes:
+      - ./data/mail:/mail:z
+      - ./data/state:/state:z
+      - ./data/index:/index:z
+      # Sync logs, per-run reports and the bin/mail audit log; rotated after LOG_RETENTION_DAYS.
+      - ./data/logs:/logs:z
+      # Your tag rules and account kinds (read-only inside the container).
+      - ./data/rules:/rules:ro,z
+
+  # Read-only web UI: browse and copy mail, tags, run reports, logs and rules. Same image, but no .env:
+  # it gets no passwords or tokens, every folder is read-only, and it never sees data/state.
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        HIMALAYA_VERSION: v2.2.1
+    image: localhost/mailposta:latest
+    container_name: mailposta-web
+    restart: unless-stopped
+    depends_on: [mail]
+    entrypoint: ["python3", "/opt/emailassist/webui"]
+    environment:
+      TZ: ${TZ:-America/Phoenix}
+    network_mode: bridge
+    # Only the login's port: login shares this container's network and listens on 80; the UI (8080) is
+    # never published, so nothing reaches it without the login. This machine only by default; for your
+    # local network set MAILPOSTA_BIND=0.0.0.0 in .env (plain HTTP: from outside, use a VPN).
+    ports: ["${MAILPOSTA_BIND:-127.0.0.1}:${MAILPOSTA_PORT:-17203}:80"]
+    volumes:
+      - ./data/mail:/mail:ro,z
+      - ./data/index:/index:ro,z
+      - ./data/logs:/logs:ro,z
+      - ./data/rules:/rules:ro,z
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  login:
+    image: docker.io/library/caddy:2.11.7-alpine
+    container_name: mailposta-login
+    restart: unless-stopped
+    depends_on: [web]
+    network_mode: "service:web"
+    # The official Caddy image with docker/Caddyfile and the login from .env: MAILPOSTA_LOGIN_USER and
+    # MAILPOSTA_LOGIN_HASH (bcrypt; how to make it: .env.example). Without them compose refuses to start,
+    # so your mail is never served without the login.
+    environment:
+      TZ: ${TZ:-America/Phoenix}
+      MAILPOSTA_LOGIN_USER: ${MAILPOSTA_LOGIN_USER:?set MAILPOSTA_LOGIN_USER in .env (see .env.example)}
+      MAILPOSTA_LOGIN_HASH: ${MAILPOSTA_LOGIN_HASH:?set MAILPOSTA_LOGIN_HASH in .env (see .env.example)}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro,z   # the only file it gets: no mail
+    # Read-only, every Linux capability dropped except port 80 (the official caddy binary asks for it and
+    # won't start without); its state is kept in memory (no certificates, no admin API).
+    read_only: true
+    tmpfs: [/data, /config, /tmp]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]

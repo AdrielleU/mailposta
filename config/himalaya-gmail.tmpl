@@ -1,0 +1,17 @@
+
+[accounts.${name}]
+default = ${default}
+email = ${q_address}
+display-name = ${q_display_name}
+maildir.root = "/mail/${name}"
+mailbox.alias.inbox = "INBOX"
+
+[accounts.${name}-cloud]
+email = ${q_address}
+display-name = ${q_display_name}
+imap.server = "imaps://${imap_host}:${imap_port}"
+imap.sasl.plain.username = ${q_address}
+imap.sasl.plain.password.command = "printenv ${prefix}_PASSWORD"
+mailbox.alias.inbox = "INBOX"
+mailbox.alias.drafts = ${q_drafts_folder}
+mailbox.alias.trash = ${q_trash_folder}

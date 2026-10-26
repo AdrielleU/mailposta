@@ -1,0 +1,31 @@
+# --- ${name} (outlook / Microsoft 365): one-way mirror, server -> local ----
+
+IMAPAccount ${name}
+Host ${imap_host}
+Port ${imap_port}
+User ${address}
+# OAuth2 access token (IMAP scope only), refreshed by oauth-token as needed.
+PassCmd "oauth-token ${name}"
+AuthMechs XOAUTH2
+TLSType IMAPS
+CertificateFile /etc/ssl/certs/ca-certificates.crt
+
+IMAPStore ${name}-remote
+Account ${name}
+
+MaildirStore ${name}-local
+Path /mail/${name}/
+Inbox /mail/${name}/INBOX
+SubFolders Verbatim
+Flatten .
+
+Channel ${name}
+Far :${name}-remote:
+Near :${name}-local:
+Patterns ${sync_patterns}
+Sync Pull
+Create Near
+Remove None
+Expunge Near
+CopyArrivalDate yes
+SyncState /state/${name}/

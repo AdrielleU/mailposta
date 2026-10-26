@@ -1,0 +1,39 @@
+MailPostA
+Copyright (c) 2026 AdrielleU
+Licensed under the MIT License (see LICENSE).
+
+MailPostA's own code is the scripts, configuration templates, container
+setup and documentation in this repository. It is not a fork: it builds a
+container image around the following projects, which are downloaded at build
+time and used unmodified. Each keeps its own license.
+
+  himalaya (email CLI, Rust)
+    https://github.com/pimalaya/himalaya
+    Copyright (c) the Pimalaya project and himalaya contributors
+    Licensed under the MIT License or the Apache License 2.0, at your option.
+    The official release binary is bundled in the image; its license files
+    are in /usr/share/doc/himalaya/ inside the image.
+
+  isync / mbsync (IMAP sync)
+    https://isync.sourceforge.io/
+    Licensed under the GNU General Public License v2 or later.
+    Installed from Debian; license in /usr/share/doc/isync/copyright.
+
+  notmuch (mail index and tags)
+    https://notmuchmail.org/
+    Licensed under the GNU General Public License v3 or later.
+    Installed from Debian; license in /usr/share/doc/notmuch/copyright.
+
+  Caddy (web server, used for the web UI login)
+    https://caddyserver.com/
+    Licensed under the Apache License 2.0.
+    Used as the official docker.io/library/caddy image.
+
+  Debian, Python, PyYAML and the other Debian packages in the image keep
+  their own licenses (see /usr/share/doc/*/copyright inside the image).
+
+Trademarks: Gmail is a trademark of Google LLC. Outlook and Microsoft 365 are
+trademarks of Microsoft Corporation. Claude and Claude Code are trademarks of
+Anthropic. MailPostA is an independent project, not affiliated with or
+endorsed by any of them or by the projects listed above. Their names are used
+only to describe what MailPostA works with.

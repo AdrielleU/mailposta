@@ -1,0 +1,11 @@
+# A person must approve changes to the files that keep MailPostA safe: the send guard, the Claude Code
+# permissions and rules, anything that touches the server or secrets, the web UI, and the automation.
+# With "Require review from Code Owners" on main, a bot approval never counts.
+/bin/                    @AdrielleU
+/.claude/                @AdrielleU
+/CLAUDE.md               @AdrielleU
+/config/                 @AdrielleU
+/docker/                 @AdrielleU
+/docker-compose.yml      @AdrielleU
+/scripts/                @AdrielleU
+/.github/                @AdrielleU

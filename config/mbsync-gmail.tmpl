@@ -1,0 +1,34 @@
+# --- ${name} (gmail): one-way mirror, server -> local ----------------------
+
+IMAPAccount ${name}
+Host ${imap_host}
+Port ${imap_port}
+User ${address}
+PassCmd "printenv ${prefix}_PASSWORD"
+# Gmail also offers XOAUTH2; pin password auth so the OAuth plugin isn't picked.
+AuthMechs PLAIN LOGIN
+TLSType IMAPS
+CertificateFile /etc/ssl/certs/ca-certificates.crt
+
+IMAPStore ${name}-remote
+Account ${name}
+
+MaildirStore ${name}-local
+Path /mail/${name}/
+Inbox /mail/${name}/INBOX
+SubFolders Verbatim
+Flatten .
+
+Channel ${name}
+Far :${name}-remote:
+Near :${name}-local:
+Patterns ${sync_patterns}
+# Pull only: new mail, flag changes and server-side deletions flow down.
+# Nothing is ever pushed back, so local pruning/deletes never reach the server.
+Sync Pull
+Create Near
+Remove None
+Expunge Near
+# Sets each local file's mtime to the server arrival date; prune relies on it.
+CopyArrivalDate yes
+SyncState /state/${name}/

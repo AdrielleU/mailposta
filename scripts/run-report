@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Writes the report for one sync run.
+
+Reads per-account results from /tmp/run/<account>.env (written by the
+entrypoint), then:
+  - appends one JSON line to /logs/runs-YYYY-MM-DD.jsonl (machine-readable)
+  - prints a human summary block, which the entrypoint adds to the day's log
+
+    run-report <started-epoch> <account> [<account> ...]
+"""
+import json
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def read_result(account):
+    fields = {}
+    for line in Path(f"/tmp/run/{account}.env").read_text().splitlines():
+        key, _, value = line.partition("=")
+        fields[key] = value
+    result = {"account": account, "status": fields.get("status", "unknown")}
+    for key in ("new", "removed_on_server", "pruned", "local_total"):
+        result[key] = int(fields.get(key) or 0)
+    if fields.get("error"):
+        result["error"] = fields["error"]
+    return result
+
+
+def main():
+    started, accounts = float(sys.argv[1]), sys.argv[2:]
+    results = [read_result(a) for a in accounts]
+    now = datetime.now(timezone.utc).astimezone()
+    report = {
+        "time": now.isoformat(timespec="seconds"),
+        "status": "ok" if all(r["status"] == "ok" for r in results) else "failed",
+        "duration_s": round(time.time() - started, 1),
+        "accounts": results,
+    }
+    tags_file = Path("/tmp/run/tags.json")
+    if tags_file.exists():
+        report["tagging"] = json.loads(tags_file.read_text())
+    with open(f"/logs/runs-{now:%Y-%m-%d}.jsonl", "a") as f:
+        f.write(json.dumps(report) + "\n")
+
+    width = max(len(r["account"]) for r in results + [{"account": "tags"}])
+    indent = " " * (4 + width + 1)
+    print(f"=== RUN {report['status'].upper()} at {report['time']} ({report['duration_s']}s)")
+    for r in results:
+        line = (f"    {r['account']:<{width}} {r['status'].upper():<6} +{r['new']} new, "
+                f"-{r['removed_on_server']} deleted on server, -{r['pruned']} pruned, "
+                f"{r['local_total']} kept locally")
+        if "error" in r:
+            line += f"\n{indent}error: {r['error']}"
+        print(line)
+    if "tagging" in report:
+        t = report["tagging"]
+        tagged = ", ".join(f"{k} +{v}" for k, v in t["tagged"].items()) or "no rule matches"
+        print(f"    {'tags':<{width}} {t['indexed']} new indexed; {tagged}")
+        for w in t.get("warnings", []):
+            print(f"{indent}rules warning: {w}")
+
+
+if __name__ == "__main__":
+    main()

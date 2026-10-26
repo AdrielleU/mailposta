@@ -1,0 +1,31 @@
+#!/bin/sh
+# First-time setup after cloning: creates the data folders (podman won't start without them) and the
+# starter files. Never overwrites anything you already have, so it's safe to run again.
+set -eu
+cd "$(dirname "$0")/.."
+
+mkdir -p data/mail data/state data/index data/logs data/rules
+chmod 700 data/state   # sync state and Outlook sign-in tokens
+
+for f in accounts.yaml tags.yaml; do
+  if [ ! -e "data/rules/$f" ]; then
+    cp "examples/rules/$f" "data/rules/$f"
+    echo "created data/rules/$f (starter file: edit it to fit your mail)"
+  fi
+done
+
+if [ ! -e .env ]; then
+  cp .env.example .env
+  chmod 600 .env
+  echo "created .env: fill in your accounts and the web UI login (see the comments inside)"
+fi
+
+cat <<'EOF'
+
+Next:
+  1. Edit .env: ACCOUNTS, each account's settings, and MAILPOSTA_LOGIN_USER / MAILPOSTA_LOGIN_HASH
+  2. Edit data/rules/accounts.yaml: one entry per account, personal or business
+  3. docker compose up -d --build          (Podman: podman-compose up -d --build)
+  4. bin/mail --tool oauth-token login <name>   once per Outlook account
+  5. Open http://127.0.0.1:17203
+EOF

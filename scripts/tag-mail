@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Index mail with notmuch and apply the tag rules in /rules (local only).
+
+    tag-mail             index, then tag new messages (the sync loop runs this)
+    tag-mail --all       re-apply every rule to all messages (after editing rules)
+    tag-mail --check     validate the rules files and exit
+    tag-mail --report F  also write a JSON summary to F (for the run report)
+
+Rules: /rules/accounts.yaml (personal/business per account) and /rules/tags.yaml.
+Tags never leave this machine: notmuch keeps them in its own database and
+maildir flags are not touched.
+"""
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+RULES = Path("/rules")
+ACCOUNTS_FILE = Path.home() / ".config/emailassist/accounts.json"
+TAG_RE = re.compile(r"[a-z0-9][a-z0-9/_.-]*")
+
+
+def notmuch(*args):
+    return subprocess.run(["notmuch", *args], check=True, capture_output=True, text=True).stdout
+
+
+def count(query):
+    return int(notmuch("count", "--", query).strip() or 0)
+
+
+def slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def scope(names):
+    return "(" + " or ".join(f'path:"{n}/**"' for n in names) + ")"
+
+
+def load(path, key):
+    if not path.exists():
+        return []
+    data = yaml.safe_load(path.read_text()) or {}
+    return data.get(key) or ([] if key == "rules" else {})
+
+
+def validate():
+    """Returns (accounts, rules, problems). Accounts: name -> settings."""
+    configured = [a["name"] for a in json.loads(ACCOUNTS_FILE.read_text())]
+    problems = []
+    accounts = {}
+    raw_accounts = load(RULES / "accounts.yaml", "accounts")
+    for name in configured:
+        a = raw_accounts.get(name) or {}
+        if a.get("kind") not in ("personal", "business"):
+            problems.append(f"accounts.yaml: give {name!r} a kind (personal or business)")
+        accounts[name] = a
+    for name in raw_accounts:
+        if name not in configured:
+            problems.append(f"accounts.yaml: {name!r} is not in ACCOUNTS (ignored)")
+
+    rules = []
+    for i, r in enumerate(load(RULES / "tags.yaml", "rules"), 1):
+        where = f"tags.yaml rule #{i} ({r.get('name', 'unnamed')})"
+        tags = r.get("tags") or []
+        if not r.get("query") or not tags:
+            problems.append(f"{where}: needs a query and at least one tag")
+            continue
+        bad = [t for t in tags if not TAG_RE.fullmatch(str(t))]
+        if bad:
+            problems.append(f"{where}: invalid tag(s) {bad}: use lowercase letters, digits, / _ . -")
+            continue
+        names = list(configured)
+        if r.get("accounts"):
+            unknown = [n for n in r["accounts"] if n not in configured]
+            if unknown:
+                problems.append(f"{where}: unknown account(s) {unknown}")
+            names = [n for n in names if n in r["accounts"]]
+        if r.get("kind"):
+            names = [n for n in names if accounts[n].get("kind") == r["kind"]]
+        if names:
+            rules.append({"name": r.get("name") or f"rule{i}", "query": r["query"],
+                          "tags": tags, "accounts": names})
+    return accounts, rules, problems
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--all", action="store_true")
+    ap.add_argument("--check", action="store_true")
+    ap.add_argument("--report")
+    args = ap.parse_args()
+
+    accounts, rules, problems = validate()
+    for p in problems:
+        print(f"tag-mail: warning: {p}")
+    if args.check:
+        if not problems:
+            print(f"tag-mail: {len(rules)} rules OK for {len(accounts)} accounts")
+        sys.exit(1 if problems else 0)
+
+    notmuch("new", "--quiet")
+    base = "*" if args.all else "tag:new"
+    indexed = count("tag:new")
+
+    for name, a in accounts.items():
+        auto = [f"acct/{name}"]
+        if a.get("kind") in ("personal", "business"):
+            auto.append(a["kind"])
+        if a.get("business"):
+            auto.append(f"biz/{slug(a['business'])}")
+        notmuch("tag", *[f"+{t}" for t in auto], "--", f"({base}) and {scope([name])}")
+
+    applied = {}
+    for r in rules:
+        query = f"({base}) and ({r['query']}) and {scope(r['accounts'])}"
+        missing = " and ".join(f"tag:{t}" for t in r["tags"])
+        try:
+            n = count(f"{query} and not ({missing})")
+            if n:
+                notmuch("tag", *[f"+{t}" for t in r["tags"]], "--", query)
+        except subprocess.CalledProcessError as e:
+            print(f"tag-mail: rule {r['name']!r} failed: {e.stderr.strip()}")
+            continue
+        if n:
+            applied[r["name"]] = n
+
+    notmuch("tag", "-new", "--", "tag:new")
+    summary = ", ".join(f"{k} +{v}" for k, v in applied.items()) or "no rule matches"
+    print(f"tag-mail: {'re-applied to all mail' if args.all else f'{indexed} new indexed'}; {summary}")
+    if args.report:
+        Path(args.report).write_text(json.dumps({"indexed": indexed, "tagged": applied,
+                                                 "warnings": problems}))
+
+
+if __name__ == "__main__":
+    main()
