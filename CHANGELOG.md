@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-27
+
 ### Added
 - One-way (pull-only) sync of any number of Gmail (app password) and Outlook / Microsoft 365 (OAuth device
   sign-in) accounts into local Maildir copies, every 15 minutes, keeping the last 60 days.
@@ -20,3 +22,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Read-only web UI (overview, mail, message with copy buttons, run reports, logs, rules) behind a Caddy
   bcrypt login, with no secrets and read-only mounts.
 - `bin/setup` for first-time folders and starter files.
+- `SYNC_HOURS` to sync only between set local hours (e.g. `7-22`, or `22-6` overnight).
+- Published image `ghcr.io/adrielleu/mailposta` (amd64 and arm64); `MAILPOSTA_IMAGE` in `.env` uses it
+  instead of building locally.
+- CI on every push and pull request: shellcheck, Python syntax, compose validation, and an image smoke test.
+- Logo (`assets/`), also the web UI's favicon; system requirements in the README.
