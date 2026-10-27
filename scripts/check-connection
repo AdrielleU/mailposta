@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Tests each account's live connection: logs in to the server and lists its folders.
+
+    check-connection                  every account in ACCOUNTS
+    check-connection primary work     just these
+    check-connection --status work    also record the result for the web UI
+                                      (/control/status/check-<account>.json; control-watch uses this)
+
+Reads only: nothing is downloaded, flagged, moved or sent. Exits 1 if any account failed or is invalid.
+Run from the host with `bin/mail --tool check [account ...]`.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+CONFIG = Path.home() / ".config/emailassist"
+STATUS = Path("/control/status")
+TOKENS = Path("/state/oauth")
+
+
+def set_status(account, state, **extra):
+    if not STATUS.is_dir():
+        return
+    data = {"account": account, "state": state, "updated": time.time(), **extra}
+    tmp = STATUS / f".check-{account}.{os.getpid()}"
+    tmp.write_text(json.dumps(data))
+    tmp.chmod(0o644)
+    os.replace(tmp, STATUS / f"check-{account}.json")
+
+
+def last_line(text):
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[-1][:300] if lines else ""
+
+
+def check(account):
+    """Returns (state, message, extra) with state ok, failed or invalid."""
+    accounts = {a["name"]: a for a in json.loads((CONFIG / "accounts.json").read_text())}
+    invalid = {a["account"]: a["error"] for a in json.loads((CONFIG / "invalid.json").read_text())}
+    if account in invalid:
+        return "invalid", invalid[account], {}
+    a = accounts.get(account)
+    if not a:
+        return "invalid", "not in ACCOUNTS", {}
+    if a["type"] == "outlook" and not (TOKENS / f"{account}.json").exists():
+        return "failed", "not signed in to Microsoft yet: use Sign in in the web UI", {}
+    started = time.time()
+    try:
+        r = subprocess.run(["himalaya", "--json", "-a", f"{account}-cloud", "mailbox", "list"],
+                           capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return "failed", f"no answer from {a['imap_host']} within 60s", {}
+    seconds = round(time.time() - started, 1)
+    if r.returncode != 0:
+        return "failed", last_line(r.stderr) or last_line(r.stdout) or f"himalaya exited with {r.returncode}", {}
+    try:
+        folders = len(json.loads(r.stdout))
+    except (ValueError, TypeError):
+        folders = None
+    found = f"{folders} folder{'s' if folders != 1 else ''}, " if folders is not None else ""
+    return "ok", f"logged in to {a['imap_host']}: {found}{seconds}s", {"folders": folders, "seconds": seconds}
+
+
+def main():
+    args = sys.argv[1:]
+    record = "--status" in args
+    names = [a for a in args if a != "--status"]
+    if any(a.startswith("-") for a in names):
+        sys.exit(__doc__)
+    if not names:
+        names = [a["name"] for a in json.loads((CONFIG / "accounts.json").read_text())]
+        names += [a["account"] for a in json.loads((CONFIG / "invalid.json").read_text())]
+    width = max(len(n) for n in names) if names else 0
+    all_ok = True
+    for name in names:
+        if record:
+            set_status(name, "running")
+        state, message, extra = check(name)
+        if record:
+            set_status(name, state, message=message, **extra)
+        all_ok &= state == "ok"
+        print(f"{name:<{width}}  {state.upper():<7}  {message}", flush=True)
+    sys.exit(0 if all_ok else 1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Runs what the web UI asks for. Started in the background by entrypoint.sh.
+
+The web UI can't do anything itself: it only creates an empty file in /control/requests/
+  signin-<account>   start a Microsoft sign-in      -> oauth-token web-login <account>
+  check-<account>    test the account's connection  -> check-connection --status <account>
+and reads the results from /control/status/. Requests for unknown accounts or older than two minutes are
+dropped, and each account runs at most one of each at a time. Every 30 seconds it also refreshes the
+sign-in states and lists which accounts can be tested.
+"""
+import json
+import os
+import re
+import subprocess
+import time
+from pathlib import Path
+
+CONTROL = Path("/control")
+REQUESTS, STATUS = CONTROL / "requests", CONTROL / "status"
+CONFIG = Path.home() / ".config/emailassist"
+MAX_AGE = 120
+REQUEST = re.compile(r"(signin|check)-([a-z][a-z0-9]*)")
+
+
+def log(msg):
+    print(f"[{time.strftime('%Y-%m-%dT%H:%M:%S%z')}] control: {msg}", flush=True)
+
+
+def configured():
+    return {a["name"]: a for a in json.loads((CONFIG / "accounts.json").read_text())}
+
+
+def refresh(accounts):
+    subprocess.run(["oauth-token", "refresh-states"], timeout=60)
+    # Every valid account can be tested; drop results for accounts no longer in ACCOUNTS (or invalid).
+    for f in STATUS.glob("check-*.json"):
+        if f.stem.removeprefix("check-") not in accounts:
+            f.unlink(missing_ok=True)
+    for name in accounts:
+        f = STATUS / f"check-{name}.json"
+        if not f.exists():
+            tmp = STATUS / f".check-{name}.{os.getpid()}"
+            tmp.write_text(json.dumps({"account": name, "state": "idle", "updated": time.time()}))
+            tmp.chmod(0o644)
+            os.replace(tmp, f)
+        else:
+            try:
+                st = json.loads(f.read_text())
+            except ValueError:
+                continue
+            if st.get("state") == "running" and st.get("updated", 0) < time.time() - 180:
+                f.unlink(missing_ok=True)  # interrupted by a restart; recreated as idle next time
+
+
+def main():
+    REQUESTS.mkdir(parents=True, exist_ok=True)
+    STATUS.mkdir(parents=True, exist_ok=True)
+    running, refreshed = {}, 0.0
+    log("watching for web UI requests")
+    while True:
+        accounts = configured()
+        for f in sorted(REQUESTS.iterdir()):
+            if f.name.startswith("."):
+                continue
+            try:
+                age = time.time() - f.stat().st_mtime
+                f.unlink()
+            except OSError:
+                continue
+            m = REQUEST.fullmatch(f.name)
+            if not m or age > MAX_AGE:
+                continue
+            kind, name = m.groups()
+            if name not in accounts or (kind == "signin" and accounts[name]["type"] != "outlook"):
+                continue
+            if f.name in running and running[f.name].poll() is None:
+                continue  # already running for this account
+            log(f"{kind} {name}")
+            cmd = ["oauth-token", "web-login", name] if kind == "signin" else ["check-connection", "--status", name]
+            running[f.name] = subprocess.Popen(cmd)
+        for key in [k for k, proc in running.items() if proc.poll() is not None]:
+            del running[key]
+        if time.time() - refreshed > 30:
+            try:
+                refresh(accounts)
+            except (OSError, subprocess.SubprocessError) as exc:
+                log(f"refresh failed: {exc}")
+            refreshed = time.time()
+        time.sleep(2)
+
+
+if __name__ == "__main__":
+    main()

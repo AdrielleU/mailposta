@@ -15,6 +15,7 @@
 #   data/index   notmuch tag/search index
 #   data/logs    sync logs, run reports, bin/mail audit log (kept LOG_RETENTION_DAYS)
 #   data/rules   your account kinds and tag rules
+#   data/control requests from the web UI (sign in, test connection) and their results (no tokens)
 # The ":z" on each mount relabels it for SELinux (RHEL/Fedora with podman) so both containers can read it.
 name: mailposta
 
@@ -41,6 +42,8 @@ services:
       - ./data/logs:/logs:z
       # Your tag rules and account kinds (read-only inside the container).
       - ./data/rules:/rules:ro,z
+      # Requests from the web UI (Microsoft sign-in, connection test) in, their state out. Never tokens.
+      - ./data/control:/control:z
 
   # Read-only web UI: browse and copy mail, tags, run reports, logs and rules. Same image, but no .env:
   # it gets no passwords or tokens, every folder is read-only, and it never sees data/state.
@@ -67,6 +70,9 @@ services:
       - ./data/index:/index:ro,z
       - ./data/logs:/logs:ro,z
       - ./data/rules:/rules:ro,z
+      # The web UI's only write access: asking the mail container to sign in or test a connection.
+      - ./data/control/requests:/control/requests:z
+      - ./data/control/status:/control/status:ro,z
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

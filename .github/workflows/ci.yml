@@ -61,6 +61,30 @@ jobs:
             if grep -r ci-secret-7f3a ~/.mbsyncrc ~/.config; then echo "secret written to a config file" >&2; exit 1; fi
           '
 
+      - name: Invalid account doesn't stop the others
+        run: |
+          docker run --rm -e ACCOUNTS=smoke,broken -e SMOKE_TYPE=gmail -e SMOKE_ADDRESS=smoke@example.com \
+            -e SMOKE_PASSWORD=x -e BROKEN_TYPE=gmail -e BROKEN_ADDRESS=b@example.com "$IMAGE" sh -c '
+            set -e
+            test "$(configure 2>/dev/null)" = smoke
+            grep -q "BROKEN_PASSWORD" ~/.config/emailassist/invalid.json
+            himalaya account list | grep -q smoke
+            if himalaya account list | grep -q broken; then echo "invalid account was configured" >&2; exit 1; fi
+            mkdir -p /tmp/run /logs
+            printf "status=ok\nnew=0\nremoved_on_server=0\npruned=0\nlocal_total=0\n" > /tmp/run/smoke.env
+            run-report "$(date +%s)" smoke | grep -q "broken INVALID set BROKEN_PASSWORD"
+          '
+
+      - name: Connection check
+        run: |
+          # The server is unreachable on purpose (port 1): check must report FAILED, not hang or crash.
+          out=$(docker run --rm -e ACCOUNTS=smoke,broken -e SMOKE_TYPE=gmail -e SMOKE_ADDRESS=smoke@example.com \
+            -e SMOKE_PASSWORD=x -e SMOKE_IMAP_HOST=127.0.0.1 -e SMOKE_IMAP_PORT=1 -e BROKEN_TYPE=gmail \
+            "$IMAGE" check-connection 2>&1) && { echo "check-connection should exit 1" >&2; exit 1; }
+          echo "$out"
+          echo "$out" | grep -qE '^smoke +FAILED'
+          echo "$out" | grep -qE '^broken +INVALID +set BROKEN_ADDRESS'
+
       - name: SYNC_HOURS
         run: |
           acct="-e ACCOUNTS=smoke -e SMOKE_TYPE=gmail -e SMOKE_ADDRESS=smoke@example.com -e SMOKE_DISPLAY_NAME=Smoke -e SMOKE_PASSWORD=x"
@@ -85,6 +109,36 @@ jobs:
           done
           test "$(docker exec web curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/nope)" = 404
 
+      - name: Web UI sign-in button
+        run: |
+          mkdir -p ci/control/requests ci/control/status
+          chmod 777 ci/control/requests
+          echo '{"account":"msft","address":"a@example.com","state":"signed_out"}' > ci/control/status/signin-msft.json
+          echo '{"account":"msft","state":"idle"}' > ci/control/status/check-msft.json
+          docker run -d --name web2 --entrypoint python3 --cap-drop ALL --read-only --tmpfs /tmp \
+            -v "$PWD/ci/mail:/mail:ro" -v "$PWD/ci/logs:/logs:ro" -v "$PWD/ci/rules:/rules:ro" -v "$PWD/ci/index:/index:ro" \
+            -v "$PWD/ci/control/requests:/control/requests" -v "$PWD/ci/control/status:/control/status:ro" \
+            "$IMAGE" /opt/emailassist/webui
+          for i in $(seq 30); do docker exec web2 curl -fsS -o /dev/null http://127.0.0.1:8080/static/app.css && break; sleep 1; done
+          code() { docker exec web2 curl -s -o /dev/null -w '%{http_code}' -X POST "$@"; }
+          docker exec web2 curl -fsS http://127.0.0.1:8080/ | grep -q 'Sign in with Microsoft'
+          test "$(code http://127.0.0.1:8080/signin/msft)" = 403                                       # no origin
+          test "$(code -H 'Sec-Fetch-Site: cross-site' http://127.0.0.1:8080/signin/msft)" = 403      # another site
+          test "$(code -H 'Origin: http://evil.example' http://127.0.0.1:8080/signin/msft)" = 403
+          test "$(code -H 'Sec-Fetch-Site: same-origin' http://127.0.0.1:8080/signin/nobody)" = 404   # not an Outlook account
+          test "$(code -H 'Sec-Fetch-Site: same-origin' http://127.0.0.1:8080/m)" = 405               # nothing else accepts POST
+          test -z "$(ls -A ci/control/requests)"
+          test "$(code -H 'Sec-Fetch-Site: same-origin' http://127.0.0.1:8080/signin/msft)" = 303
+          test -f ci/control/requests/signin-msft
+          docker exec web2 curl -fsS http://127.0.0.1:8080/signin/msft | grep -q 'STARTING'
+          # Test connection button
+          docker exec web2 curl -fsS http://127.0.0.1:8080/ | grep -q 'action="/check/msft"'
+          test "$(code -H 'Origin: http://evil.example' http://127.0.0.1:8080/check/msft)" = 403
+          test "$(code -H 'Sec-Fetch-Site: same-origin' http://127.0.0.1:8080/check/nobody)" = 404
+          test "$(code -H 'Sec-Fetch-Site: same-origin' http://127.0.0.1:8080/check/msft)" = 303
+          test -f ci/control/requests/check-msft
+          docker exec web2 curl -fsS http://127.0.0.1:8080/ | grep -q 'TESTING'
+
       - name: Container logs
         if: failure()
-        run: docker logs web 2>&1 || true
+        run: docker logs web 2>&1 || true; docker logs web2 2>&1 || true

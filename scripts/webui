@@ -3,8 +3,10 @@
 
 Runs in its own container (docker-compose.yml, service web) with every folder mounted read-only and no
 secrets in its environment; Caddy (service login) shares its network and asks for the password first.
-There is no code here that changes, sends or deletes anything. Emails are shown as plain text (HTML mail is
-converted, never rendered), so no remote images, trackers or scripts load.
+Nothing here changes, sends or deletes mail. The one thing it can write: an empty file in
+/control/requests/ asking the mail container to start a Microsoft sign-in (Outlook accounts) or to test an
+account's connection; it shows the results from /control/status/. Tokens stay in the mail container. Emails are shown as plain text
+(HTML mail is converted, never rendered), so no remote images, trackers or scripts load.
 
 Listens on 127.0.0.1:8080, which only Caddy can reach.
 """
@@ -28,6 +30,8 @@ from pathlib import Path
 import yaml
 
 MAIL, LOGS, RULES, INDEX = Path("/mail"), Path("/logs"), Path("/rules"), Path("/index")
+CONTROL_STATUS, CONTROL_REQUESTS = Path("/control/status"), Path("/control/requests")
+ACCOUNT_NAME = re.compile(r"[a-z][a-z0-9]*")
 PAGE_SIZE = 50
 LOG_NAME = re.compile(r"(sync|runs|audit)-\d{4}-\d{2}-\d{2}\.(log|jsonl)")
 NOTMUCH_ENV = dict(os.environ, NOTMUCH_CONFIG="/tmp/notmuch-config")
@@ -213,6 +217,46 @@ def attachment(path, n):
     return None
 
 
+def control_states(kind):
+    """{account: state} written by the mail container: kind "signin" (oauth-token) or "check" (check-connection)."""
+    out = {}
+    for f in sorted(CONTROL_STATUS.glob(f"{kind}-*.json")) if CONTROL_STATUS.is_dir() else []:
+        acct = f.stem.removeprefix(f"{kind}-")
+        if not ACCOUNT_NAME.fullmatch(acct):
+            continue
+        try:
+            out[acct] = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def requested(kind, acct):
+    return (CONTROL_REQUESTS / f"{kind}-{acct}").exists()
+
+
+def signin_states():
+    """Outlook accounts and their sign-in state."""
+    out = {}
+    for acct, st in control_states("signin").items():
+        if st.get("state") == "pending" and st.get("expires_at", 0) < datetime.now().timestamp():
+            st = {**st, "state": "failed", "message": "The code expired before it was entered."}
+        if requested("signin", acct) and st.get("state") not in ("starting", "pending"):
+            st = {**st, "state": "starting"}
+        out[acct] = st
+    return out
+
+
+def check_states():
+    """Accounts that can be tested, with the last result (idle, running, ok or failed)."""
+    out = {}
+    for acct, st in control_states("check").items():
+        if requested("check", acct) and st.get("state") != "running":
+            st = {**st, "state": "running"}
+        out[acct] = st
+    return out
+
+
 def run_reports(days=7):
     files = sorted(LOGS.glob("runs-*.jsonl"), reverse=True)[:days] if LOGS.exists() else []
     runs = []
@@ -283,13 +327,13 @@ def sidebar(cur_acct=None, cur_folder=None, cur_tag=None):
     return "\n".join(out)
 
 
-def page(title, body, side=""):
+def page(title, body, side="", head=""):
     nav = "".join(f'<a href="{h}">{n}</a>' for h, n in
                   (("/", "Overview"), ("/m", "Mail"), ("/runs", "Run reports"), ("/logs", "Logs"), ("/rules", "Rules")))
     layout = f'<div class="layout">{side}<main>{body}</main></div>' if side else f"<main class=\"wide\">{body}</main>"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{e(title)} · MailPostA</title><link rel="icon" type="image/svg+xml" href="/static/logo.svg"><link rel="stylesheet" href="/static/app.css"></head>
+<title>{e(title)} · MailPostA</title>{head}<link rel="icon" type="image/svg+xml" href="/static/logo.svg"><link rel="stylesheet" href="/static/app.css"></head>
 <body><header class="top"><a class="brand" href="/">MailPostA</a><nav class="topnav">{nav}</nav>
 <span class="ro">read-only</span></header>{layout}<script src="/static/app.js"></script></body></html>"""
 
@@ -299,8 +343,10 @@ def view_overview():
     runs = run_reports(2)
     last = runs[0] if runs else None
     by_acct = {a["account"]: a for a in (last or {}).get("accounts", [])}
+    checks = check_states()
     cards = []
-    for a in accounts():
+    # Accounts with local mail, plus any the last run reported or that can be tested (invalid, never synced).
+    for a in dict.fromkeys(accounts() + list(by_acct) + list(checks)):
         m = meta.get(a) or {}
         msgs = list_messages(acct=a)
         unread = sum(s["unread"] for s in msgs)
@@ -309,13 +355,90 @@ def view_overview():
                   if r else '<span class="pill">no report</span>')
         sub = " · ".join(x for x in (m.get("kind", ""), m.get("business", "")) if x)
         err = f'<p class="err">{e(r["error"])}</p>' if r and r.get("error") else ""
-        cards.append(f"""<a class="card" href="{url('/m', acct=a)}"><div class="card-h"><b>{e(m.get('label') or a)}</b>{status}</div>
+        cards.append(f"""<div class="card"><div class="card-h"><a href="{url('/m', acct=a)}"><b>{e(m.get('label') or a)}</b></a>{status}</div>
 <div class="muted">{e(a)}{' · ' + e(sub) if sub else ''}</div>
 <div class="stats"><span><b>{len(msgs)}</b> messages</span><span><b>{unread}</b> unread</span>
-<span><b>{len(folders(a))}</b> folders</span></div>{err}</a>""")
+<span><b>{len(folders(a))}</b> folders</span></div>{err}{check_line(a, checks.get(a))}</div>""")
     when_txt = f'Last sync run {e(last["time"])} ({e(last["status"])})' if last else "No sync runs yet"
     body = f"<h1>Overview</h1><p class=\"muted\">{when_txt}</p><div class=\"cards\">{''.join(cards) or '<p>No mail synced yet.</p>'}</div>"
-    return page("Overview", body)
+    states = signin_states()
+    if states:
+        rows = []
+        for a, st in states.items():
+            label = (meta.get(a) or {}).get("label") or a
+            pill, action = SIGNIN_PILL.get(st.get("state"), SIGNIN_PILL["signed_out"]), ""
+            if st.get("state") in ("starting", "pending"):
+                action = f'<a class="btn" href="/signin/{a}">Show the code</a>'
+            elif st.get("state") != "signed_in":
+                action = signin_button(a)
+            msg = f'<p class="err">{e(st["message"])}</p>' if st.get("state") in ("signed_out", "failed") and st.get("message") else ""
+            rows.append(f'<div class="card"><div class="card-h"><a href="/signin/{a}"><b>{e(label)}</b></a>{pill}</div>'
+                        f'<div class="muted">{e(st.get("address") or a)}</div>{msg}<div class="actions">{action}</div></div>')
+        body += f'<h2>Microsoft sign-in</h2><div class="cards">{"".join(rows)}</div>'
+    busy = any(c.get("state") == "running" for c in checks.values())
+    return page("Overview", body, head='<meta http-equiv="refresh" content="3">' if busy else "")
+
+
+def check_line(acct, st):
+    """The connection-test row on an account card: last result and a Test connection button."""
+    if st is None:
+        return ""
+    state = st.get("state")
+    if state == "running":
+        return '<div class="check"><span class="pill">TESTING…</span></div>'
+    button = f'<form class="inline" method="post" action="/check/{acct}"><button class="btn">Test connection</button></form>'
+    if state in ("ok", "failed", "invalid"):
+        ago = when(st["updated"]) if st.get("updated") else ""
+        pill = f'<span class="pill {"ok" if state == "ok" else "bad"}">{"CONNECTED" if state == "ok" else state.upper()}</span>'
+        cls = "muted" if state == "ok" else "err"
+        return (f'<div class="check">{pill}<span class="{cls}">{e(st.get("message", ""))}</span>'
+                f'<span class="muted">· {e(ago)}</span>{button}</div>')
+    return f'<div class="check">{button}</div>'
+
+
+SIGNIN_PILL = {
+    "signed_in": '<span class="pill ok">SIGNED IN</span>',
+    "starting": '<span class="pill">STARTING</span>',
+    "pending": '<span class="pill">WAITING FOR YOU</span>',
+    "failed": '<span class="pill bad">SIGN-IN FAILED</span>',
+    "signed_out": '<span class="pill bad">SIGN-IN NEEDED</span>',
+}
+
+
+def signin_button(acct, label="Sign in with Microsoft"):
+    return f'<form class="inline" method="post" action="/signin/{acct}"><button class="btn primary">{e(label)}</button></form>'
+
+
+def view_signin(acct):
+    st = signin_states().get(acct)
+    if st is None:
+        return None
+    label = (account_meta().get(acct) or {}).get("label") or acct
+    state, head = st.get("state"), ""
+    who = f' as <b>{e(st["address"])}</b>' if st.get("address") else ""
+    if state == "starting":
+        head = '<meta http-equiv="refresh" content="2">'
+        inner = '<p>Asking Microsoft for a sign-in code…</p>'
+    elif state == "pending":
+        head = '<meta http-equiv="refresh" content="5">'
+        uri = st.get("verification_uri", "")
+        uri = uri if uri.startswith("https://") else "https://microsoft.com/devicelogin"
+        left = max(0, int((st.get("expires_at", 0) - datetime.now().timestamp()) / 60))
+        code = st.get("user_code", "")
+        inner = f"""<ol class="steps">
+<li>Open <a href="{e(uri)}" target="_blank" rel="noopener noreferrer">{e(uri.removeprefix("https://"))}</a> (opens a new tab).</li>
+<li>Enter this code: <code class="bigcode" id="code">{e(code)}</code> {copy_button("Copy code", text=code)}</li>
+<li>Sign in{who} and accept. This page updates on its own.</li></ol>
+<p class="muted">The code expires in about {left} minute{"s" if left != 1 else ""}. MailPostA only asks for IMAP access, which can't send mail.</p>"""
+    elif state == "signed_in":
+        inner = (f'<p>Signed in. Mail for this account downloads on the next sync run.</p>'
+                 f'<div class="actions"><a class="btn" href="/">Back to the overview</a>{signin_button(acct, "Sign in again")}</div>')
+    else:
+        msg = f'<p class="err">{e(st["message"])}</p>' if st.get("message") else ""
+        inner = f'{msg}<p>Sign in{who} with Microsoft so MailPostA can download this mailbox.</p><div class="actions">{signin_button(acct)}</div>'
+    pill = SIGNIN_PILL.get(state, SIGNIN_PILL["signed_out"])
+    body = f'<div class="bar"><h1>Microsoft sign-in: {e(label)}</h1>{pill}</div>{inner}'
+    return page(f"Sign in: {label}", body, head=head)
 
 
 def view_list(params):
@@ -477,6 +600,10 @@ h1{font-size:22px;margin:0}h2{font-size:17px;margin:18px 0 8px}h3{font-size:15px
 .heads td{padding:2px 0;word-break:break-word}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
 .body{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;white-space:pre-wrap;word-break:break-word;font:14px/1.5 var(--mono);margin:8px 0}
 .atts{padding-left:18px}
+.inline{display:inline}.check{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;font-size:13px}
+.check .btn{margin-left:auto;font-size:13px;padding:4px 10px}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.steps{line-height:2.2;padding-left:22px}.bigcode{font-size:22px;font-weight:700;letter-spacing:.08em;padding:2px 10px;
+border:1px dashed var(--accent);border-radius:8px;background:var(--accent-bg);color:var(--accent);margin-right:6px}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:14px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;color:var(--text)}.card:hover{border-color:var(--accent);text-decoration:none}
 .card-h{display:flex;justify-content:space-between;align-items:center;gap:8px}.stats{display:flex;gap:14px;margin-top:10px;font-size:14px;color:var(--muted)}
@@ -571,6 +698,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, out) if out else self.not_found()
             if p == "/rules":
                 return self.send(200, view_rules())
+            if p.startswith("/signin/"):
+                out = view_signin(p[8:])
+                return self.send(200, out) if out else self.not_found()
             if p == "/static/app.css":
                 return self.send(200, CSS, "text/css; charset=utf-8")
             if p in ("/static/logo.svg", "/favicon.ico"):
@@ -585,10 +715,41 @@ class Handler(BaseHTTPRequestHandler):
     def not_found(self):
         self.send(404, page("Not found", '<h1>Not found</h1><p><a href="/">Back to the overview</a></p>'))
 
+    def same_origin(self):
+        # Basic-auth credentials ride along on cross-site form posts too, so only accept our own pages.
+        site = self.headers.get("Sec-Fetch-Site")
+        if site is not None:
+            return site == "same-origin"
+        origin, host = self.headers.get("Origin"), self.headers.get("Host")
+        return bool(origin and host) and urllib.parse.urlsplit(origin).netloc == host
+
     def do_POST(self):
+        # The only POSTs: /signin/<account> and /check/<account>, which ask the mail container to act.
+        p = urllib.parse.urlsplit(self.path).path
+        self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096))
+        kind, _, acct = p.strip("/").partition("/")
+        if kind not in ("signin", "check"):
+            return self.send(405, "read-only", "text/plain")
+        if not self.same_origin():
+            return self.send(403, "refused: not sent from this site", "text/plain")
+        known = signin_states() if kind == "signin" else check_states()
+        if not ACCOUNT_NAME.fullmatch(acct) or acct not in known:
+            return self.not_found()
+        try:
+            tmp = CONTROL_REQUESTS / f".{kind}-{acct}.{threading.get_ident()}"
+            tmp.write_text("")
+            os.replace(tmp, CONTROL_REQUESTS / f"{kind}-{acct}")
+        except OSError as exc:
+            self.log_error("%s request for %s failed: %r", kind, acct, exc)
+            return self.send(500, page("Error", "<h1>Couldn't send the request</h1><p>The web UI can't write to "
+                                                "<code>data/control/requests</code>. Run <code>bin/setup</code>, then "
+                                                "<code>docker compose up -d</code>.</p>"))
+        self.send(303, "", "text/plain", {"Location": f"/signin/{acct}" if kind == "signin" else "/"})
+
+    def do_PUT(self):
         self.send(405, "read-only", "text/plain")
 
-    do_PUT = do_DELETE = do_PATCH = do_POST
+    do_DELETE = do_PATCH = do_PUT
 
     def log_message(self, fmt, *args):
         # Paths only (no query strings: searches can contain email content).

@@ -23,6 +23,7 @@ bin/mail envelope list -m INBOX --page-size 50
 bin/mail -a work envelope search from alice and after 2026-10-01 order by date desc
 bin/mail -a work message read <ID>                 # leaves flags alone (no --seen)
 bin/mail -a personal-cloud envelope search subject invoice and before 2026-08-01
+bin/mail --tool check                              # test every account's server login (read-only)
 
 # Drafts (saved to that account's server Drafts folder; the user reviews and sends them)
 bin/mail -a work-cloud message compose -t bob@x.y -s "Subject" --body "..." --save drafts   # --body-file paths are inside the container, so use --body
@@ -49,7 +50,8 @@ When asked how syncing is going, read these with the Read tool. Never edit or de
 - Drafts only. Never try to send mail by any route (`--send`, `message send`, `smtp`, Python `smtplib`, curl, Graph API, ...).
   If the user wants something sent, save it as a draft and tell them it's waiting in Drafts.
 - Never print or log `.env`, passwords, or OAuth tokens (`data/state/oauth/`). Microsoft sign-in
-  (`bin/mail --tool oauth-token login <outlook-account>`) is for the user to run with `!`. If an Outlook account's
-  sync says the token is missing or expired, tell them to run it.
+  (`bin/mail --tool oauth-token login <outlook-account>` with `!`, or **Sign in with Microsoft** on the web UI
+  overview) is for the user to do themselves. If an Outlook account's sync says the token is missing or expired,
+  tell them to sign in again either way.
 - Don't edit `bin/mail`, `config/`, `docker/`, `scripts/` or `.claude/settings.json` to work around these limits.
 - Work mail is the employer's data. Don't copy it into other tools or files unless the user asks.

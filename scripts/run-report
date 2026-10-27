@@ -2,7 +2,8 @@
 """Writes the report for one sync run.
 
 Reads per-account results from /tmp/run/<account>.env (written by the
-entrypoint), then:
+entrypoint) plus the accounts configure marked invalid (status "invalid", with
+the reason as the error), then:
   - appends one JSON line to /logs/runs-YYYY-MM-DD.jsonl (machine-readable)
   - prints a human summary block, which the entrypoint adds to the day's log
 
@@ -28,13 +29,28 @@ def read_result(account):
     return result
 
 
+def invalid_results():
+    try:
+        invalid = json.loads((Path.home() / ".config/emailassist/invalid.json").read_text())
+    except (OSError, ValueError):
+        return []
+    out = []
+    for a in invalid:
+        local = Path("/mail") / a["account"]
+        kept = sum(1 for sub in ("cur", "new") for _ in local.glob(f"*/{sub}/*"))
+        out.append({"account": a["account"], "status": "invalid", "new": 0, "removed_on_server": 0,
+                    "pruned": 0, "local_total": kept, "error": a["error"]})
+    return out
+
+
 def main():
     started, accounts = float(sys.argv[1]), sys.argv[2:]
-    results = [read_result(a) for a in accounts]
+    results = [read_result(a) for a in accounts] + invalid_results()
+    statuses = {r["status"] for r in results}
     now = datetime.now(timezone.utc).astimezone()
     report = {
         "time": now.isoformat(timespec="seconds"),
-        "status": "ok" if all(r["status"] == "ok" for r in results) else "failed",
+        "status": "failed" if statuses - {"ok", "invalid"} else "invalid" if "invalid" in statuses else "ok",
         "duration_s": round(time.time() - started, 1),
         "accounts": results,
     }
@@ -48,7 +64,10 @@ def main():
     indent = " " * (4 + width + 1)
     print(f"=== RUN {report['status'].upper()} at {report['time']} ({report['duration_s']}s)")
     for r in results:
-        line = (f"    {r['account']:<{width}} {r['status'].upper():<6} +{r['new']} new, "
+        if r["status"] == "invalid":
+            print(f"    {r['account']:<{width}} INVALID {r['error']}")
+            continue
+        line = (f"    {r['account']:<{width}} {r['status'].upper():<7} +{r['new']} new, "
                 f"-{r['removed_on_server']} deleted on server, -{r['pruned']} pruned, "
                 f"{r['local_total']} kept locally")
         if "error" in r:

@@ -1,3 +1,4 @@
 .env
-.env.bak
+.env.*
+!.env.example
 data/

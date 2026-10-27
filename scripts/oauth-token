@@ -5,13 +5,22 @@
                              https://microsoft.com/devicelogin
     oauth-token work         prints a valid access token, refreshing it when
                              needed (this is what mbsync and himalaya call)
+    oauth-token web-login work   the same sign-in started from the web UI
+                                 (control-watch runs it; the code goes to the web UI)
+    oauth-token refresh-states   bring the web UI's sign-in states in line with
+                                 the stored tokens (control-watch runs it)
 
 The scope is IMAP only, so these tokens cannot send mail. The refresh token is
 stored in /state/oauth/<account>.json (mode 600).
+
+Sign-in state per account goes to /control/status/signin-<account>.json for the
+web UI: signed_in, signed_out, starting, pending (with the code to enter) or
+failed. It never holds a token.
 """
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -19,17 +28,48 @@ import urllib.request
 from pathlib import Path
 
 STORE = Path("/state/oauth")
+STATUS = Path("/control/status")
 SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
 
 
-def endpoints(account):
+class LoginError(Exception):
+    pass
+
+
+def outlook_accounts():
     # Resolved settings (with defaults) written by `configure` at container start.
     accounts = json.loads((Path.home() / ".config/emailassist/accounts.json").read_text())
-    match = [a for a in accounts if a["name"] == account and a["type"] == "outlook"]
-    if not match:
+    return {a["name"]: a for a in accounts if a["type"] == "outlook"}
+
+
+def endpoints(account):
+    a = outlook_accounts().get(account)
+    if not a:
         sys.exit(f"{account!r} is not an outlook account in ACCOUNTS")
-    a = match[0]
     return f"https://login.microsoftonline.com/{a['oauth_tenant']}/oauth2/v2.0", a["oauth_client_id"]
+
+
+def get_status(account):
+    try:
+        return json.loads((STATUS / f"signin-{account}.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def set_status(account, state, **extra):
+    """Record the sign-in state for the web UI. Skipped when /signin isn't mounted."""
+    if not STATUS.is_dir():
+        return
+    a = outlook_accounts().get(account, {})
+    data = {"account": account, "address": a.get("address", ""), "state": state, "updated": time.time(), **extra}
+    tmp = STATUS / f".signin-{account}.{os.getpid()}.{threading.get_ident()}"
+    tmp.write_text(json.dumps(data))
+    tmp.chmod(0o644)
+    os.replace(tmp, STATUS / f"signin-{account}.json")
+
+
+def log(msg):
+    print(f"[{time.strftime('%Y-%m-%dT%H:%M:%S%z')}] sign-in: {msg}", file=sys.stderr, flush=True)
 
 
 def post(url, data):
@@ -52,14 +92,18 @@ def save(account, token):
     os.replace(tmp, STORE / f"{account}.json")
 
 
-def login(account):
+def login(account, quiet=False):
+    """Device-code sign-in. Shows the code in the terminal (unless quiet) and in the web UI."""
     base, client_id = endpoints(account)
     dc = post(f"{base}/devicecode", {"client_id": client_id, "scope": SCOPE})
     if "device_code" not in dc:
-        sys.exit(f"device code request failed: {dc.get('error_description', dc)}")
-    print(dc["message"], file=sys.stderr, flush=True)
+        raise LoginError(f"device code request failed: {dc.get('error_description', dc)}")
+    if not quiet:
+        print(dc["message"], file=sys.stderr, flush=True)
     interval = int(dc.get("interval", 5))
     deadline = time.time() + int(dc["expires_in"])
+    set_status(account, "pending", user_code=dc["user_code"], verification_uri=dc["verification_uri"],
+               expires_at=deadline)
     while time.time() < deadline:
         time.sleep(interval)
         token = post(f"{base}/token", {
@@ -69,21 +113,25 @@ def login(account):
         })
         if "access_token" in token:
             save(account, token)
+            set_status(account, "signed_in")
             print(f"logged in; token stored for {account!r}", file=sys.stderr)
             return
         error = token.get("error")
         if error == "slow_down":
             interval += 5
         elif error != "authorization_pending":
-            sys.exit(f"login failed: {token.get('error_description', error)}")
-    sys.exit("login timed out, run it again")
+            raise LoginError(f"login failed: {token.get('error_description', error)}")
+    raise LoginError("login timed out, run it again")
 
 
 def access_token(account):
     base, client_id = endpoints(account)
     path = STORE / f"{account}.json"
-    relogin = f"run `bin/mail --tool oauth-token login {account}`"
+    relogin = f"run `bin/mail --tool oauth-token login {account}` or use Sign in in the web UI"
+    busy = get_status(account).get("state") in ("starting", "pending")  # don't hide a sign-in in progress
     if not path.exists():
+        if not busy:
+            set_status(account, "signed_out", message="Not signed in yet.")
         sys.exit(f"no token for {account!r}: {relogin}")
     token = json.loads(path.read_text())
     if time.time() >= token["expires_at"]:
@@ -94,18 +142,65 @@ def access_token(account):
             "scope": SCOPE,
         })
         if "access_token" not in new:
+            if not busy:
+                set_status(account, "signed_out",
+                           message=f"Microsoft refused the saved sign-in ({new.get('error')}). Sign in again.")
             sys.exit(f"token refresh failed ({new.get('error')}): {relogin}")
         new.setdefault("refresh_token", token["refresh_token"])
         save(account, new)
         token = new
+    if not busy and get_status(account).get("state") != "signed_in":
+        set_status(account, "signed_in")
     print(token["access_token"])
+
+
+def web_login(account):
+    if account not in outlook_accounts():
+        sys.exit(f"{account!r} is not an outlook account in ACCOUNTS")
+    log(f"started for {account} (code shown in the web UI)")
+    try:
+        login(account, quiet=True)
+        log(f"{account} signed in")
+    except Exception as exc:  # anything, so the web UI never waits forever
+        set_status(account, "failed", message=str(exc))
+        log(f"{account} failed: {exc}")
+
+
+def refresh_states():
+    """Bring each account's state in line with its token file (first start, restarts, manual changes)."""
+    if not STATUS.is_dir():
+        return
+    accounts = outlook_accounts()
+    for f in STATUS.glob("signin-*.json"):
+        if f.stem.removeprefix("signin-") not in accounts:  # removed from ACCOUNTS, or invalid
+            f.unlink(missing_ok=True)
+    now = time.time()
+    for name in accounts:
+        st = get_status(name)
+        state = st.get("state")
+        token = STORE / f"{name}.json"
+        has = token.exists()
+        stale = (state == "pending" and st.get("expires_at", 0) < now) or \
+                (state == "starting" and st.get("updated", 0) < now - 90)  # container restarted mid-way
+        if state is None or stale or (state == "signed_in" and not has):
+            set_status(name, "signed_in") if has else set_status(name, "signed_out", message="Not signed in yet.")
+        elif state in ("signed_out", "failed") and has and token.stat().st_mtime > st.get("updated", 0):
+            set_status(name, "signed_in")  # signed in from the terminal meanwhile
 
 
 def main():
     args = sys.argv[1:]
     if len(args) == 2 and args[0] == "login":
-        login(args[1])
-    elif len(args) == 1 and args[0] != "login":
+        try:
+            login(args[1])
+        except LoginError as exc:
+            set_status(args[1], "failed", message=str(exc))
+            sys.exit(str(exc))
+    elif len(args) == 2 and args[0] == "web-login":
+        web_login(args[1])
+    elif args == ["refresh-states"]:
+        refresh_states()
+    elif len(args) == 1 and args[0] not in ("login", "web-login", "refresh-states"):
         access_token(args[0])
     else:
         sys.exit(__doc__)

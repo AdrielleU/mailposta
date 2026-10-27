@@ -7,6 +7,7 @@
 #   bin/mail --tool delete-both --account personal '<id@x>'   (dry run; add --yes)
 #   bin/mail --tool prune
 #   bin/mail --tool oauth-token login work        (one-time Microsoft sign-in)
+#   bin/mail --tool check [account ...]           (test each account's server login; reads only)
 #   bin/mail --tool notmuch search tag:receipt and date:7d..   (local tags/search)
 #   bin/mail --tool suggest-rules                 (rule ideas from repeated senders)
 #   bin/mail --tool tag-mail --all                (re-apply data/rules to all mail)
@@ -44,6 +45,7 @@ if [ "${1:-}" = "--tool" ]; then
   shift
   case "${1:-}" in
     delete-both|prune|tag-mail|suggest-rules) ;;
+    check) shift; set -- check-connection "$@" ;;
     # notmuch: search/read and local tagging only (no insert, reindex, config...).
     notmuch)
       case "${2:-}" in
@@ -52,7 +54,7 @@ if [ "${1:-}" = "--tool" ]; then
       esac ;;
     # Only the interactive login; printing a raw access token is not allowed.
     oauth-token) [ "${2:-}" = login ] || refuse "oauth-token only supports 'login <account>'" ;;
-    *) refuse "--tool only runs delete-both, prune, tag-mail, suggest-rules, notmuch or 'oauth-token login'" ;;
+    *) refuse "--tool only runs check, delete-both, prune, tag-mail, suggest-rules, notmuch or 'oauth-token login'" ;;
   esac
   run "$@"
 fi

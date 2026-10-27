@@ -133,11 +133,15 @@ docker compose pull mail web && docker compose up -d
 ```
 
 ### 4. Sign in to each Outlook account (once)
+In the web UI (http://127.0.0.1:17203), the overview has a **Microsoft sign-in** section with one card per
+Outlook account. Click **Sign in with Microsoft**, open the link it shows, enter the code, and sign in.
+The page updates by itself when you're done. Or from the terminal:
 ```sh
 bin/mail --tool oauth-token login work
 ```
-Open the link it prints, enter the code, and sign in. Until you do, that account's sync logs
-"no token" and the other accounts keep syncing.
+Until you sign in, that account's sync logs "no token" and the other accounts keep syncing. If Microsoft
+later refuses the saved sign-in (password change, expiry, admin revoke), the card turns to **Sign-in needed**:
+sign in again the same way.
 
 ### 5. Check it
 ```sh
@@ -187,6 +191,10 @@ bin/mail envelope list -m INBOX --page-size 50                 # default account
 bin/mail -a work envelope search from alice and after 2026-10-01 order by date desc
 bin/mail -a work message read <ID>                             # doesn't mark it as read
 bin/mail -a side-cloud envelope search subject invoice and before 2026-08-01
+
+# Test each account's server login (lists folders, downloads nothing); or name accounts
+bin/mail --tool check
+bin/mail --tool check work
 
 # Drafts (saved to the account's Drafts folder on the server; you send them yourself)
 bin/mail -a work-cloud message compose -t bob@example.com -s "Subject" --body "..." --save drafts
@@ -238,17 +246,23 @@ itself is never published.
 
 | Page | What's there |
 |---|---|
-| **Overview** | One card per account: label, personal/business, message and unread counts, last sync status and error |
+| **Overview** | One card per account: label, personal/business, message and unread counts, last sync status and error, and **Test connection** (logs in to the server and lists folders, downloads nothing; shows Connected or the reason it failed). Below them, **Microsoft sign-in** for each Outlook account: signed in or not, and a **Sign in with Microsoft** button |
+| **Sign in** | The code to enter at microsoft.com/devicelogin, with a Copy button; updates by itself until you're signed in |
 | **Mail** | All accounts or one account/folder, grouped Business / Personal in the sidebar, tag filters, search by sender/recipient/subject, newest first |
 | **Message** | Headers, body as plain text, tags, attachments to download, and buttons: **Copy body**, **Copy headers + body**, **Copy Message-ID** (for `delete-both`), **Raw**, **Download .eml** |
 | **Run reports** | Every sync run from the last 7 days, per account, with tag counts; copy as JSON lines |
 | **Logs** | The daily sync, run-report and audit logs, each with a Copy button |
 | **Rules** | `accounts.yaml` and `tags.yaml`, read-only |
 
-It **can't change anything**:
-- There is no code that writes, sends, moves or deletes.
+It **can't change your mail**:
+- There is no code that sends, moves, deletes or edits mail, rules or settings.
 - The container gets every folder read-only, has no `.env`, passwords or tokens, and never sees `data/state`.
 - It runs with a read-only filesystem and no Linux capabilities.
+- Its one write: an empty file in `data/control/requests/` asking the mail container to start a Microsoft
+  sign-in or test a connection. The mail container does the work and keeps tokens in `data/state`; the web
+  UI only reads the results (`data/control/status/`: states, the sign-in code, test results). The buttons
+  only work from the web UI's own pages (other sites can't trigger them), and nothing is signed in until
+  someone enters the code on Microsoft's site and signs in.
 
 HTML emails are converted to plain text and never rendered, so tracking pixels, remote images and scripts
 never load. Links stay visible as text.
@@ -263,7 +277,7 @@ never load. Links stay visible as text.
 | What | How |
 |---|---|
 | **Server left alone** | mbsync runs with `Sync Pull`, `Expunge Near` and `Remove None`, so nothing is ever pushed to the server. Pruning and local deletes stay local, and reading doesn't mark mail as read. |
-| **No sending** | 1) No SMTP configured on any account. 2) Outlook tokens only grant IMAP access, so Microsoft would refuse to send with them. 3) `bin/mail` refuses `--send`, `message send` and `smtp`, and `--tool` only runs `delete-both`, `prune`, `tag-mail`, `suggest-rules`, read/tag `notmuch` commands, or `oauth-token login`. 4) `.claude/settings.json` blocks Claude from running commands in the container directly, from using `smtplib`/`sendmail`, and from reading `.env` or tokens. |
+| **No sending** | 1) No SMTP configured on any account. 2) Outlook tokens only grant IMAP access, so Microsoft would refuse to send with them. 3) `bin/mail` refuses `--send`, `message send` and `smtp`, and `--tool` only runs `check`, `delete-both`, `prune`, `tag-mail`, `suggest-rules`, read/tag `notmuch` commands, or `oauth-token login`. 4) `.claude/settings.json` blocks Claude from running commands in the container directly, from using `smtplib`/`sendmail`, and from reading `.env` or tokens. |
 | **Asks first** | Claude Code asks before saving drafts, deleting, changing flags, or editing `bin/mail`, `config/`, `docker/`, `scripts/` or the settings. |
 | **Deletes are recoverable** | `delete-both` moves server copies to Trash. The provider empties it later (Gmail: 30 days). |
 | **Secrets** | Gmail app passwords live only in `.env` (mode 600, gitignored). Outlook uses OAuth, with no password at all: the refresh token is in `data/state/oauth/<name>.json` (mode 600). Configs fetch credentials at runtime, so none are stored in the image, and tokens are redacted from logs. |
@@ -284,7 +298,7 @@ Everything goes in `data/logs/`, one file per day. Files older than `LOG_RETENTI
     personal OK     +5 new, -1 deleted on server, -3 pruned, 1204 kept locally
     side     OK     +0 new, -0 deleted on server, -0 pruned, 88 kept locally
     work     FAILED +0 new, -0 deleted on server, -0 pruned, 0 kept locally
-             error: no token for 'work': run `bin/mail --tool oauth-token login work`
+             error: no token for 'work': run `bin/mail --tool oauth-token login work` or use Sign in in the web UI
 ```
 
 ## Configuration
@@ -343,13 +357,18 @@ endings when the repo is checked out on Windows.
   messages were deleted on purpose and won't fetch them again.
 - **Folder names:** a server folder `A/B` appears locally as `A.B`, e.g. `[Gmail].Sent Mail`.
   Don't sync `[Gmail]/All Mail`, because it duplicates every label.
+- **An account shows `INVALID`** (web UI overview, run reports, and the sync log's `=== RUN` block): its
+  settings in `.env` are incomplete or wrong, and the reason is shown next to it (e.g. `set PRIMARY_PASSWORD`).
+  That account is skipped; the others keep syncing. Fix `.env`, then `docker compose up -d`.
+- **`Couldn't send the request` in the web UI, or compose says `data/control` is missing:** run `bin/setup`
+  (creates `data/control/requests` and `data/control/status`), then `docker compose up -d`.
 - **Removing an account:** take it out of `ACCOUNTS` and restart. Its local copy stays in `data/mail/<name>` until you delete it.
 
 ## Project layout
 ```
 bin/mail                 host wrapper: send guard, audit log
 bin/setup                first-time data folders, starter rules and .env
-docker-compose.yml       mail (sync), web (UI), login (Caddy); volumes data/{mail,state,index,logs,rules}
+docker-compose.yml       mail (sync), web (UI), login (Caddy); volumes data/{mail,state,index,logs,rules,control}
 docker/Dockerfile        Debian + mbsync + himalaya (pinned release) + notmuch
 docker/entrypoint.sh     config render + sync loop
 docker/Caddyfile         the web UI login
@@ -357,11 +376,13 @@ config/*.tmpl            mbsync and himalaya templates per account type
 scripts/configure        reads ACCOUNTS, applies defaults, renders configs
 scripts/prune            local retention
 scripts/delete-both      delete on server (to Trash) and locally, by Message-ID
-scripts/oauth-token      Microsoft sign-in (device code) and token refresh
+scripts/oauth-token      Microsoft sign-in (device code, terminal or web UI) and token refresh
+scripts/check-connection test each account's server login (bin/mail --tool check, web UI button)
+scripts/control-watch    runs what the web UI asks for (sign-in, connection test)
 scripts/run-report       per-run summary and JSON report
 scripts/tag-mail         notmuch indexing + applying data/rules
 scripts/suggest-rules    rule suggestions from repeated senders
-scripts/webui            the read-only web UI (Python standard library)
+scripts/webui            the web UI: read-only, plus starting Microsoft sign-ins (Python standard library)
 examples/rules/          starter accounts.yaml and tags.yaml (copied by bin/setup)
 data/rules/              your account kinds and tag rules (gitignored)
 CLAUDE.md                rules Claude Code follows here (always loaded)

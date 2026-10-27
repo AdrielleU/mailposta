@@ -5,6 +5,20 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Microsoft sign-in from the web UI: a **Sign in with Microsoft** button per Outlook account shows the
+  device code and link, and updates when you're done. The mail container does the sign-in and keeps the
+  token; the web UI only writes a request file (`data/control/requests/`) and reads the state. The overview
+  shows which Outlook accounts are signed in or need it. Run `bin/setup` once to create `data/control/`.
+- Connection test: `bin/mail --tool check [account ...]` and a **Test connection** button on each account
+  card. It logs in to the server and lists the folders (downloads nothing), then shows Connected or the
+  reason it failed (wrong app password, not signed in, invalid settings).
+
+### Changed
+- An account with missing or wrong settings in `.env` no longer stops the mail container. It's marked
+  `INVALID` with the reason (web UI overview, run reports, sync log) and skipped; the other accounts keep
+  syncing. Only an empty `ACCOUNTS` still stops it.
+
 ## [0.1.0] - 2026-10-27
 
 ### Added

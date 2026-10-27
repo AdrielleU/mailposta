@@ -4,7 +4,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-mkdir -p data/mail data/state data/index data/logs data/rules
+mkdir -p data/mail data/state data/index data/logs data/rules data/control/requests data/control/status
 chmod 700 data/state   # sync state and Outlook sign-in tokens
 
 for f in accounts.yaml tags.yaml; do
@@ -26,6 +26,6 @@ Next:
   1. Edit .env: ACCOUNTS, each account's settings, and MAILPOSTA_LOGIN_USER / MAILPOSTA_LOGIN_HASH
   2. Edit data/rules/accounts.yaml: one entry per account, personal or business
   3. docker compose up -d --build          (Podman: podman-compose up -d --build)
-  4. bin/mail --tool oauth-token login <name>   once per Outlook account
+  4. Outlook accounts: Sign in with Microsoft in the web UI (or bin/mail --tool oauth-token login <name>)
   5. Open http://127.0.0.1:17203
 EOF

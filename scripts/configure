@@ -6,11 +6,16 @@ Accounts come from ACCOUNTS=name1,name2,... with per-account variables
 ACCOUNTS, the older GMAIL_* / WORK_* layout is read as accounts "gmail" (type
 gmail) and "work" (type outlook).
 
+An account with missing or wrong settings is marked invalid and left out; the
+others still sync. Only an empty ACCOUNTS stops the container.
+
 Writes:
   ~/.config/emailassist/accounts.json   resolved non-secret settings, read by
                                         delete-both and oauth-token
+  ~/.config/emailassist/invalid.json    [{"account", "error"}] for invalid ones,
+                                        read by run-report
   ~/.mbsyncrc, ~/.config/himalaya/config.toml
-and prints the account names, space separated, for the entrypoint.
+and prints the valid account names, space separated, for the entrypoint.
 
 Secrets are never written: the rendered configs fetch them at runtime
 (printenv <NAME>_PASSWORD / oauth-token <name>).
@@ -24,6 +29,7 @@ from string import Template
 
 TEMPLATES = Path("/templates")
 ACCOUNTS_FILE = Path.home() / ".config/emailassist/accounts.json"
+INVALID_FILE = Path.home() / ".config/emailassist/invalid.json"
 
 DEFAULTS = {
     "gmail": {
@@ -73,6 +79,10 @@ def fail(message):
     sys.exit(f"configure: {message}")
 
 
+class Invalid(Exception):
+    pass
+
+
 def account_names():
     if os.environ.get("ACCOUNTS"):
         names = [n.strip() for n in os.environ["ACCOUNTS"].split(",") if n.strip()]
@@ -80,26 +90,25 @@ def account_names():
         names = [n for n in LEGACY_TYPES if os.environ.get(f"{n.upper()}_ADDRESS")]
     if not names:
         fail("set ACCOUNTS (and the per-account variables) in .env")
-    for name in names:
-        # Lowercase letters/digits only: it becomes a directory, an env prefix,
-        # and a himalaya account name (with "-cloud" appended for the live one).
-        if not re.fullmatch(r"[a-z][a-z0-9]*", name):
-            fail(f"account name {name!r} must be lowercase letters and digits, starting with a letter")
-    if len(set(names)) != len(names):
-        fail("duplicate account names in ACCOUNTS")
     return names
 
 
-def resolve(name):
+def resolve(name, seen):
+    # Lowercase letters/digits only: it becomes a directory, an env prefix,
+    # and a himalaya account name (with "-cloud" appended for the live one).
+    if not re.fullmatch(r"[a-z][a-z0-9]*", name):
+        raise Invalid("the name must be lowercase letters and digits, starting with a letter")
+    if name in seen:
+        raise Invalid("listed twice in ACCOUNTS")
     prefix = name.upper()
     env = lambda key: os.environ.get(f"{prefix}_{key.upper()}", "").strip()
     kind = env("type") or (LEGACY_TYPES.get(name) if not os.environ.get("ACCOUNTS") else "")
     if kind not in DEFAULTS:
-        fail(f"set {prefix}_TYPE to gmail or outlook")
-    if not env("address"):
-        fail(f"set {prefix}_ADDRESS")
+        raise Invalid(f"set {prefix}_TYPE to gmail or outlook")
+    if not env("address") or "FILL-ME" in env("address"):
+        raise Invalid(f"set {prefix}_ADDRESS")
     if kind == "gmail" and not env("password"):
-        fail(f"set {prefix}_PASSWORD (a Gmail app password)")
+        raise Invalid(f"set {prefix}_PASSWORD (a Gmail app password)")
     account = {"name": name, "prefix": prefix, "type": kind,
                "address": env("address"), "display_name": env("display_name")}
     for key, default in DEFAULTS[kind].items():
@@ -112,9 +121,16 @@ def toml_str(value):
 
 
 def main():
-    accounts = [resolve(n) for n in account_names()]
+    accounts, invalid = [], []
+    for n in account_names():
+        try:
+            accounts.append(resolve(n, {a["name"] for a in accounts}))
+        except Invalid as exc:
+            invalid.append({"account": n, "error": str(exc)})
+            print(f"configure: {n} is invalid and won't sync: {exc}", file=sys.stderr)
     ACCOUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     ACCOUNTS_FILE.write_text(json.dumps(accounts, indent=2))
+    INVALID_FILE.write_text(json.dumps(invalid, indent=2))
 
     mbsync = []
     himalaya = [(TEMPLATES / "himalaya-base.tmpl").read_text()]
@@ -130,10 +146,11 @@ def main():
     # notmuch: index of all local copies for tags/search. Its database lives in
     # /index (data/index, which the web UI reads); maildir flags are left alone so
     # tags never rename mail files.
+    first = accounts[0] if accounts else {"address": "", "display_name": ""}
     Path.home().joinpath(".notmuch-config").write_text(NOTMUCH_CONFIG.format(
-        primary=accounts[0]["address"],
+        primary=first["address"],
         others=";".join(a["address"] for a in accounts[1:]),
-        name=accounts[0]["display_name"] or accounts[0]["address"]))
+        name=first["display_name"] or first["address"]))
     himalaya_cfg = Path.home() / ".config/himalaya/config.toml"
     himalaya_cfg.parent.mkdir(parents=True, exist_ok=True)
     himalaya_cfg.write_text("\n".join(himalaya))

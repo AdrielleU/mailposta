@@ -12,6 +12,7 @@
       "Bash(bin/mail -a * message read *)",
       "Bash(bin/mail -a * attachment list *)",
       "Bash(bin/mail --tool delete-both *)",
+      "Bash(bin/mail --tool check*)",
       "Bash(bin/mail --tool notmuch search *)",
       "Bash(bin/mail --tool notmuch show *)",
       "Bash(bin/mail --tool notmuch count *)",

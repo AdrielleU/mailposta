@@ -33,13 +33,18 @@ until_sync_hours() {
   echo $(( ((hours_start - h + 24) % 24) * 3600 - m * 60 - s ))
 }
 
-mkdir -p /mail /state /logs
+mkdir -p /mail /state /logs /control/requests /control/status
+# The web container has no capabilities, so under rootful Docker it can only write here if anyone may.
+# It holds nothing but empty request files ("sign in", "test connection"; see scripts/control-watch).
+chmod 777 /control/requests
 # Validates ACCOUNTS, renders ~/.mbsyncrc + himalaya config, prints the names.
 # The first account listed is himalaya's default.
 accounts=$(configure)
 
 # Everything goes to stdout (container logs) and to /logs/sync-YYYY-MM-DD.log.
 logpipe() { tee -a "/logs/sync-$(date +%F).log"; }
+# For long-running background output: picks the day's log file per line.
+logpipe_daily() { while IFS= read -r line; do echo "$line"; echo "$line" >> "/logs/sync-$(date +%F).log"; done; }
 log() { echo "$*" | logpipe; }
 # mbsync echoes a failed AUTHENTICATE line, which carries the token: redact it.
 redact() { sed 's/\(AUTHENTICATE [A-Z0-9-]*\) [^ ]*/\1 <redacted>/'; }
@@ -65,13 +70,17 @@ sync_account() {
     echo "new=$new"; echo "removed_on_server=$removed"; echo "pruned=${pruned:-0}"
     echo "local_total=$(snapshot "$a" | wc -l)"
     if [ "$status" -ne 0 ]; then
-      echo "error=$(redact < "$run/$a.mbsync" | grep -v '^\[SASL' | grep . | tail -1 | tr -d '\r' | cut -c1-300)"
+      # Prefer oauth-token's own message (it says how to sign in) over mbsync's generic last line.
+      err=$(grep -m1 -E "^(no token for|token refresh failed)" "$run/$a.mbsync" || redact < "$run/$a.mbsync" | grep -v '^\[SASL' | grep . | tail -1)
+      echo "error=$(printf '%s' "$err" | tr -d '\r' | cut -c1-300)"
     fi
   } > "$run/$a.env"
 }
 
 case "${1:-sync-loop}" in
   sync-loop)
+    # Runs what the web UI asks for: Microsoft sign-ins and connection tests.
+    control-watch 2>&1 | logpipe_daily &
     while true; do
       if ! in_sync_hours; then
         wait=$(until_sync_hours)
