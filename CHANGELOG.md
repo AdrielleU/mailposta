@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-27
+
 ### Added
 - Microsoft sign-in from the web UI: a **Sign in with Microsoft** button per Outlook account shows the
   device code and link, and updates when you're done. The mail container does the sign-in and keeps the
@@ -15,6 +17,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   reason it failed (wrong app password, not signed in, invalid settings).
 
 ### Changed
+- Overview: an account that was INVALID in the last run but whose settings are fixed now shows
+  **Settings OK** ("syncs on the next run") instead of the old error. Counts say "1 folder", not "1 folders".
+- A Microsoft sign-in starts a sync right away instead of waiting for the next interval.
 - Web UI refresh: the logo next to the name, the logo's green as the accent color, the current section
   highlighted, and softer cards, tables and buttons.
 - README: a caution section on what's stored on your computer (app passwords in `.env`, Outlook sign-ins,

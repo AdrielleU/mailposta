@@ -287,6 +287,10 @@ def size(n):
     return f"{n} B" if n < 1024 else f"{n / 1024:.0f} KB" if n < 1024 ** 2 else f"{n / 1024 ** 2:.1f} MB"
 
 
+def plural(n):
+    return "" if n == 1 else "s"
+
+
 def url(path, **params):
     params = {k: v for k, v in params.items() if v not in (None, "", 0)}
     return path + ("?" + urllib.parse.urlencode(params) if params else "")
@@ -352,14 +356,23 @@ def view_overview():
         msgs = list_messages(acct=a)
         unread = sum(s["unread"] for s in msgs)
         r = by_acct.get(a)
-        status = (f'<span class="pill {"ok" if r["status"] == "ok" else "bad"}">{e(r["status"].upper())}</span>'
-                  if r else '<span class="pill">no report</span>')
+        if r and r["status"] == "invalid" and a in checks:
+            # Invalid in the last run, but the mail container accepts it now (it only lists valid accounts
+            # for testing): the settings were fixed since, so don't show the old INVALID.
+            r = {**r, "status": "fixed", "error": None}
+        if r and r["status"] == "fixed":
+            status = '<span class="pill">SETTINGS OK</span>'
+        else:
+            status = (f'<span class="pill {"ok" if r["status"] == "ok" else "bad"}">{e(r["status"].upper())}</span>'
+                      if r else '<span class="pill">no report</span>')
         sub = " · ".join(x for x in (m.get("kind", ""), m.get("business", "")) if x)
         err = f'<p class="err">{e(r["error"])}</p>' if r and r.get("error") else ""
+        if r and r["status"] == "fixed":
+            err = '<p class="muted">Settings fixed since the last run. It syncs on the next one.</p>'
         cards.append(f"""<div class="card"><div class="card-h"><a href="{url('/m', acct=a)}"><b>{e(m.get('label') or a)}</b></a>{status}</div>
 <div class="muted">{e(a)}{' · ' + e(sub) if sub else ''}</div>
-<div class="stats"><span><b>{len(msgs)}</b> messages</span><span><b>{unread}</b> unread</span>
-<span><b>{len(folders(a))}</b> folders</span></div>{err}{check_line(a, checks.get(a))}</div>""")
+<div class="stats"><span><b>{len(msgs)}</b> message{plural(len(msgs))}</span><span><b>{unread}</b> unread</span>
+<span><b>{len(folders(a))}</b> folder{plural(len(folders(a)))}</span></div>{err}{check_line(a, checks.get(a))}</div>""")
     when_txt = f'Last sync run {e(last["time"])} ({e(last["status"])})' if last else "No sync runs yet"
     body = f"<h1>Overview</h1><p class=\"muted\">{when_txt}</p><div class=\"cards\">{''.join(cards) or '<p>No mail synced yet.</p>'}</div>"
     states = signin_states()
