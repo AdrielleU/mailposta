@@ -20,7 +20,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: shellcheck
         run: shellcheck -S warning bin/mail bin/setup scripts/prune docker/entrypoint.sh
@@ -44,7 +44,7 @@ jobs:
     env:
       IMAGE: mailposta:ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build
         run: docker build -f docker/Dockerfile -t "$IMAGE" .
