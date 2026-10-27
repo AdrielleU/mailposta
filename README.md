@@ -126,6 +126,12 @@ needs them), and set `MAILPOSTA_LOGIN_USER`. Without both, compose refuses to st
 docker compose up -d --build
 ```
 
+Or skip the build and use the published image (amd64 and arm64) from GitHub Container Registry: add
+`MAILPOSTA_IMAGE=ghcr.io/adrielleu/mailposta:latest` to `.env` (or pin a version such as `:0.1.0`), then
+```sh
+docker compose pull mail web && docker compose up -d
+```
+
 ### 4. Sign in to each Outlook account (once)
 ```sh
 bin/mail --tool oauth-token login work
@@ -300,6 +306,7 @@ All settings live in `.env`. After changing it, run `docker compose up -d`.
 | `LOG_RETENTION_DAYS` | 30 | Days of logs kept |
 | `TZ` | `America/Phoenix` | Timezone for logs and dates |
 | `MAILPOSTA_LOGIN_USER`, `_LOGIN_HASH` | — (required) | Web UI login; the hash is bcrypt, in single quotes |
+| `MAILPOSTA_IMAGE` | `localhost/mailposta:latest` (built locally) | `ghcr.io/adrielleu/mailposta:latest` to use the published image |
 | `MAILPOSTA_PORT` | 17203 | Web UI port |
 | `MAILPOSTA_BIND` | `127.0.0.1` | `0.0.0.0` to allow your local network |
 

@@ -25,7 +25,8 @@ services:
       dockerfile: docker/Dockerfile
       args:
         HIMALAYA_VERSION: v2.2.1
-    image: localhost/mailposta:latest
+    # Built locally by default; set MAILPOSTA_IMAGE=ghcr.io/adrielleu/mailposta:latest in .env to use the published one.
+    image: ${MAILPOSTA_IMAGE:-localhost/mailposta:latest}
     container_name: mailposta-mail
     env_file: .env
     init: true
@@ -49,7 +50,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         HIMALAYA_VERSION: v2.2.1
-    image: localhost/mailposta:latest
+    image: ${MAILPOSTA_IMAGE:-localhost/mailposta:latest}
     container_name: mailposta-web
     restart: unless-stopped
     depends_on: [mail]
