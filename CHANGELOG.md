@@ -15,6 +15,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
   reason it failed (wrong app password, not signed in, invalid settings).
 
 ### Changed
+- Web UI refresh: the logo next to the name, the logo's green as the accent color, the current section
+  highlighted, and softer cards, tables and buttons.
+- README: a caution section on what's stored on your computer (app passwords in `.env`, Outlook sign-ins,
+  60 days of mail) and that Outlook sign-in appears as Mozilla Thunderbird.
 - An account with missing or wrong settings in `.env` no longer stops the mail container. It's marked
   `INVALID` with the reason (web UI overview, run reports, sync log) and skipped; the other accounts keep
   syncing. Only an empty `ACCOUNTS` still stops it.

@@ -27,6 +27,25 @@ See [Credits](#credits).
 > Technical name: `mailposta` (compose project, containers `mailposta-mail`, `mailposta-web`, `mailposta-login`,
 > image `localhost/mailposta`, settings `MAILPOSTA_*`).
 
+> [!CAUTION]
+> **Use with care: this is a mail client installed on your own computer, and it keeps your credentials there.**
+> MailPostA works like a desktop email app such as Thunderbird. For Outlook / Microsoft 365 it signs in as
+> Thunderbird: it uses Thunderbird's public app ID, so Microsoft's sign-in page, and your IT department's
+> sign-in logs, show **Mozilla Thunderbird**, not MailPostA (see [Work accounts](#work-accounts-outlook--microsoft-365)).
+>
+> Everything it needs is stored **in this project folder on your local PC**:
+> - **Gmail app passwords, in plain text in `.env`.** An app password opens the whole mailbox over IMAP.
+> - **Outlook sign-ins** (refresh tokens) in `data/state/oauth/`.
+> - **The last 60 days of your mail**, unencrypted, in `data/mail/`.
+>
+> Anyone who can read your user account's files, or a backup of them, can read your mail. So:
+> - Use it only on a computer you alone control, with full-disk encryption on.
+> - Keep `.env` private (`chmod 600 .env`, as `bin/setup` does). Never commit it, and keep `.env` and `data/`
+>   out of cloud-synced folders and shared backups.
+> - If the computer is lost or shared, revoke the app passwords at
+>   [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), and end the Outlook
+>   sign-ins by deleting `data/state/oauth/` and signing out of that session in your Microsoft account (or ask IT).
+
 ## How it works
 
 ```
@@ -331,7 +350,9 @@ The older `GMAIL_*`/`WORK_*` layout (without `ACCOUNTS`) is still accepted.
   allow the sign-in app. If you see "admin approval required" or `AUTHENTICATE failed`, ask IT to enable
   IMAP and/or approve the app. They can also create their own app registration (delegated
   `IMAP.AccessAsUser.All`, public client flows enabled) for you to put in `<NAME>_OAUTH_CLIENT_ID`.
-- The default client ID is Thunderbird's public one, which is widely used for this.
+- **It signs in as Thunderbird.** The default client ID is Thunderbird's public one, which is widely used
+  for this. Microsoft's sign-in page and your organization's sign-in logs show **Mozilla Thunderbird**, and
+  IT approves "Thunderbird", not MailPostA. If your organization prefers its own app, use its client ID (above).
 - **Check company policy.** Keeping work mail on a personal machine and letting an AI read it may be restricted.
 - **Signing in again:** sign-ins usually last about 90 days if unused, and your organization can end them sooner.
   When the run report says the token refresh failed, run the login command again.
