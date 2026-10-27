@@ -38,6 +38,11 @@ jobs:
         run: |
           touch .env
           docker compose config -q
+          docker compose -f docker-compose.yml -f docker-compose.build.yml config -q
+          # The release download has no docker/, config/ or scripts/: the compose file must not need them.
+          if grep -nE '\./(docker|config|scripts)/' docker-compose.yml; then
+            echo "docker-compose.yml mounts a repo file; the release download wouldn't have it" >&2; exit 1
+          fi
 
   smoke:
     runs-on: ubuntu-latest

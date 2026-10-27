@@ -51,7 +51,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           platforms: linux/amd64,linux/arm64
-          # Keep in step with HIMALAYA_VERSION in docker-compose.yml.
+          # Keep in step with HIMALAYA_VERSION in docker-compose.build.yml.
           build-args: HIMALAYA_VERSION=v2.2.1
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -88,8 +88,15 @@ jobs:
             echo '```sh'
             echo "docker pull $image   # amd64 and arm64"
             echo '```'
-            echo "Or set \`MAILPOSTA_IMAGE=$image\` in \`.env\` and run \`docker compose pull mail web && docker compose up -d\`."
+            echo "Without git: download \`mailposta-$version.tar.gz\` below, unpack it, run \`bin/setup\`, fill in \`.env\`,"
+            echo "then \`docker compose up -d\`. To pin this version, set \`MAILPOSTA_IMAGE=$image\` in \`.env\`."
           } >> notes.md
           prerelease=""
           case "$version" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$TAG" --title "MailPostA $version" --notes-file notes.md --verify-tag $prerelease
+          # Everything needed to run the published image without git or a build.
+          mkdir -p "bundle/mailposta"
+          cp -r docker-compose.yml .env.example bin examples CLAUDE.md README.md LICENSE NOTICE "bundle/mailposta/"
+          mkdir -p bundle/mailposta/.claude && cp .claude/settings.json bundle/mailposta/.claude/
+          tar czf "mailposta-$version.tar.gz" -C bundle mailposta
+          gh release create "$TAG" --title "MailPostA $version" --notes-file notes.md --verify-tag $prerelease \
+            "mailposta-$version.tar.gz"

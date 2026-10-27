@@ -1,9 +1,10 @@
 # MailPostA (mailposta): email sync for Claude Code (mail), plus a read-only web UI (web) behind a login (login, Caddy).
 #
-#   cp .env.example .env    # then fill in your accounts and the web UI login (see .env.example)
-#   docker compose up -d --build        # Podman: podman-compose up -d --build
-#   bin/mail --tool oauth-token login <outlook-account>    # once per Outlook account
-# then open http://127.0.0.1:17203 and log in with MAILPOSTA_LOGIN_USER and your password.
+#   bin/setup               # data folders, starter rules, and .env from .env.example: fill that in
+#   docker compose up -d    # Podman: podman-compose up -d. Pulls the published image; nothing to build.
+# then open http://127.0.0.1:17203, log in with MAILPOSTA_LOGIN_USER and your password, and sign in to
+# each Outlook account there. To build the image from this checkout instead (development):
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 #
 # Linux or macOS. On Windows, WSL2 is required: run everything inside WSL (Ubuntu) with Docker Desktop's
 # WSL integration, and keep the project in the Linux filesystem (~/emailassist, not /mnt/c/...). Maildir
@@ -21,13 +22,8 @@ name: mailposta
 
 services:
   mail:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-      args:
-        HIMALAYA_VERSION: v2.2.1
-    # Built locally by default; set MAILPOSTA_IMAGE=ghcr.io/adrielleu/mailposta:latest in .env to use the published one.
-    image: ${MAILPOSTA_IMAGE:-localhost/mailposta:latest}
+    # The published image (amd64 and arm64). Pin a version in .env, e.g. MAILPOSTA_IMAGE=ghcr.io/adrielleu/mailposta:0.2
+    image: ${MAILPOSTA_IMAGE:-ghcr.io/adrielleu/mailposta:latest}
     container_name: mailposta-mail
     env_file: .env
     init: true
@@ -48,12 +44,7 @@ services:
   # Read-only web UI: browse and copy mail, tags, run reports, logs and rules. Same image, but no .env:
   # it gets no passwords or tokens, every folder is read-only, and it never sees data/state.
   web:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-      args:
-        HIMALAYA_VERSION: v2.2.1
-    image: ${MAILPOSTA_IMAGE:-localhost/mailposta:latest}
+    image: ${MAILPOSTA_IMAGE:-ghcr.io/adrielleu/mailposta:latest}
     container_name: mailposta-web
     restart: unless-stopped
     depends_on: [mail]
@@ -84,15 +75,37 @@ services:
     restart: unless-stopped
     depends_on: [web]
     network_mode: "service:web"
-    # The official Caddy image with docker/Caddyfile and the login from .env: MAILPOSTA_LOGIN_USER and
-    # MAILPOSTA_LOGIN_HASH (bcrypt; how to make it: .env.example). Without them compose refuses to start,
-    # so your mail is never served without the login.
+    # The official Caddy image and the login from .env: MAILPOSTA_LOGIN_USER and MAILPOSTA_LOGIN_HASH
+    # (bcrypt; how to make it: .env.example). Without them compose refuses to start, so your mail is never
+    # served without the login.
     environment:
       TZ: ${TZ:-America/Phoenix}
       MAILPOSTA_LOGIN_USER: ${MAILPOSTA_LOGIN_USER:?set MAILPOSTA_LOGIN_USER in .env (see .env.example)}
       MAILPOSTA_LOGIN_HASH: ${MAILPOSTA_LOGIN_HASH:?set MAILPOSTA_LOGIN_HASH in .env (see .env.example)}
-    volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro,z   # the only file it gets: no mail
+    # Its Caddyfile is written here, so the stack needs no files besides this one and .env. It shares the web
+    # container's network: the UI is at 127.0.0.1:8080 and only Caddy's port 80 is published (MAILPOSTA_PORT).
+    # Caddy fills in {$$...} from the environment above ($$ is compose's escape for $); it gets no mail.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        cat > /tmp/Caddyfile <<'EOF'
+        {
+        	admin off
+        	auto_https off
+        }
+        :80 {
+        	basic_auth {
+        		{$$MAILPOSTA_LOGIN_USER} {$$MAILPOSTA_LOGIN_HASH}
+        	}
+        	header {
+        		X-Frame-Options "DENY"
+        		-Server
+        	}
+        	reverse_proxy 127.0.0.1:8080
+        }
+        EOF
+        exec caddy run --config /tmp/Caddyfile --adapter caddyfile
     # Read-only, every Linux capability dropped except port 80 (the official caddy binary asks for it and
     # won't start without); its state is kept in memory (no certificates, no admin API).
     read_only: true

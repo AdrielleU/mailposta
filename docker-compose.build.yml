@@ -1,0 +1,14 @@
+# Builds the image from this checkout instead of pulling the published one (development):
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+# Podman: podman-compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+# Tagged localhost/mailposta:dev so it never shadows the published image.
+services:
+  mail:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        HIMALAYA_VERSION: v2.2.1   # keep in step with .github/workflows/image.yml
+    image: localhost/mailposta:dev
+  web:
+    image: localhost/mailposta:dev

@@ -77,6 +77,16 @@ sync_account() {
   } > "$run/$a.env"
 }
 
+# Live sync state for the web UI (/control/status/sync.json): state running|idle|paused, the account
+# syncing now, "name:status" for each one done this run, and when the next run starts.
+#   sync_state <state> <current> <finished> <next-epoch>
+sync_state() {
+  printf '{"state":"%s","current":"%s","accounts":"%s","done":"%s","started":%s,"next_at":%s,"updated":%s}\n' \
+    "$1" "$2" "$accounts" "$3" "${started:-0}" "${4:-0}" "$(date +%s)" > /control/status/.sync.json.tmp
+  chmod 644 /control/status/.sync.json.tmp
+  mv /control/status/.sync.json.tmp /control/status/sync.json
+}
+
 case "${1:-sync-loop}" in
   sync-loop)
     # Runs what the web UI asks for: Microsoft sign-ins and connection tests.
@@ -85,18 +95,26 @@ case "${1:-sync-loop}" in
       if ! in_sync_hours; then
         wait=$(until_sync_hours)
         log "[$(date -Is)] outside SYNC_HOURS=$SYNC_HOURS, sleeping ${wait}s until ${hours_start}:00"
+        sync_state paused "" "" "$(( $(date +%s) + wait ))"
         sleep "$wait"
         continue
       fi
       started=$(date +%s)
       rm -rf /tmp/run && mkdir -p /tmp/run
-      for a in $accounts; do sync_account "$a"; done
+      finished=""
+      for a in $accounts; do
+        sync_state running "$a" "$finished"
+        sync_account "$a"
+        finished="$finished $a:$(sed -n 's/^status=//p' "/tmp/run/$a.env")"
+      done
+      sync_state running "" "$finished"
       # Index the local copies and apply data/rules (local tags only).
       tag-mail --report /tmp/run/tags.json 2>&1 | logpipe
       run-report "$started" $accounts | logpipe
       # Rotate: daily files (sync log, run reports, host-side audit log) older than LOG_RETENTION_DAYS.
       find /logs -maxdepth 1 -type f \( -name '*.log' -o -name '*.jsonl' \) -mtime "+$LOG_RETENTION_DAYS" -delete
       log "[$(date -Is)] sleeping ${SYNC_INTERVAL}s"
+      sync_state idle "" "" "$(( $(date +%s) + SYNC_INTERVAL ))"
       # Wake early when /control/sync-now appears (a Microsoft sign-in just finished).
       slept=0
       while [ "$slept" -lt "$SYNC_INTERVAL" ] && [ ! -e /control/sync-now ]; do sleep 5; slept=$((slept + 5)); done

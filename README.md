@@ -97,6 +97,15 @@ The compose file sets no memory or CPU limits.
 
 ## Setup
 
+Nothing to build or edit in the code: the stack runs the published image
+(`ghcr.io/adrielleu/mailposta`, amd64 and arm64), and everything you set lives in `.env` and `data/`.
+Get the files either way:
+- **Without git:** download `mailposta-<version>.tar.gz` from the
+  [latest release](https://github.com/AdrielleU/mailposta/releases/latest) and unpack it
+  (`tar xzf mailposta-*.tar.gz && cd mailposta`). It holds `docker-compose.yml`, `.env.example`, `bin/`,
+  the starter rules, `CLAUDE.md` and `.claude/settings.json`.
+- **With git:** `git clone https://github.com/AdrielleU/mailposta && cd mailposta`.
+
 ### 1. Prepare your accounts
 - **Gmail:** turn on 2-step verification, then create an [App Password](https://myaccount.google.com/apppasswords)
   for each Gmail account while signed in to that account.
@@ -142,14 +151,14 @@ needs them), and set `MAILPOSTA_LOGIN_USER`. Without both, compose refuses to st
 
 ### 3. Start it
 ```sh
-docker compose up -d --build
+docker compose up -d          # Podman: podman-compose up -d
 ```
+This pulls the published image. To stay on one version, set `MAILPOSTA_IMAGE=ghcr.io/adrielleu/mailposta:0.2`
+in `.env` (`:0.2` gets fixes, `:0.2.1` never changes). **Updating:** `docker compose pull && docker compose up -d`.
+Your mail, sign-ins and settings are in `data/` and `.env`, so they carry over.
 
-Or skip the build and use the published image (amd64 and arm64) from GitHub Container Registry: add
-`MAILPOSTA_IMAGE=ghcr.io/adrielleu/mailposta:latest` to `.env` (or pin a version such as `:0.1.0`), then
-```sh
-docker compose pull mail web && docker compose up -d
-```
+**Building it yourself** (to change the code): from a git checkout, run
+`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
 
 ### 4. Sign in to each Outlook account (once)
 In the web UI (http://127.0.0.1:17203), the overview has a **Microsoft sign-in** section with one card per
@@ -339,7 +348,7 @@ All settings live in `.env`. After changing it, run `docker compose up -d`.
 | `LOG_RETENTION_DAYS` | 30 | Days of logs kept |
 | `TZ` | `America/Phoenix` | Timezone for logs and dates |
 | `MAILPOSTA_LOGIN_USER`, `_LOGIN_HASH` | — (required) | Web UI login; the hash is bcrypt, in single quotes |
-| `MAILPOSTA_IMAGE` | `localhost/mailposta:latest` (built locally) | `ghcr.io/adrielleu/mailposta:latest` to use the published image |
+| `MAILPOSTA_IMAGE` | `ghcr.io/adrielleu/mailposta:latest` | Pin a version, e.g. `ghcr.io/adrielleu/mailposta:0.2` |
 | `MAILPOSTA_PORT` | 17203 | Web UI port |
 | `MAILPOSTA_BIND` | `127.0.0.1` | `0.0.0.0` to allow your local network |
 
@@ -389,10 +398,10 @@ endings when the repo is checked out on Windows.
 ```
 bin/mail                 host wrapper: send guard, audit log
 bin/setup                first-time data folders, starter rules and .env
-docker-compose.yml       mail (sync), web (UI), login (Caddy); volumes data/{mail,state,index,logs,rules,control}
+docker-compose.yml       mail (sync), web (UI), login (Caddy, its Caddyfile inline); volumes data/{mail,state,index,logs,rules,control}
+docker-compose.build.yml build the image from this checkout instead of pulling it
 docker/Dockerfile        Debian + mbsync + himalaya (pinned release) + notmuch
 docker/entrypoint.sh     config render + sync loop
-docker/Caddyfile         the web UI login
 config/*.tmpl            mbsync and himalaya templates per account type
 scripts/configure        reads ACCOUNTS, applies defaults, renders configs
 scripts/prune            local retention

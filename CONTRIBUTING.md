@@ -16,7 +16,7 @@ Security problems go through [SECURITY.md](SECURITY.md), not issues.
 
 1. Open an issue first for anything bigger than a small fix, so we can agree on the approach.
 2. Fork, branch, and keep each pull request to one change.
-3. Test it in a running stack (`docker compose up -d --build`) with a test account or made-up mail.
+3. Test it in a running stack (`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`) with a test account or made-up mail.
    **Never commit `.env`, anything from `data/`, or real email.**
 4. Describe what changed and how you tested it in the pull request.
 

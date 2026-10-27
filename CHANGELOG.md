@@ -5,6 +5,22 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-27
+
+### Added
+- Live sync status on the web UI overview: **SYNCING** (yellow) with the account and progress,
+  **SYNCED** (green) and **WAITING** (gray) with the time of the next run, or paused outside `SYNC_HOURS`.
+  The page refreshes itself while a sync runs.
+- Each release has a `mailposta-<version>.tar.gz` download with everything needed to run the published
+  image (compose file, `.env.example`, `bin/`, starter rules, `CLAUDE.md`, Claude Code settings): no git
+  checkout or build.
+
+### Changed
+- `docker compose up -d` now pulls the published image (`ghcr.io/adrielleu/mailposta:latest`) instead of
+  building; pin a version with `MAILPOSTA_IMAGE`. Building from source moved to `docker-compose.build.yml`.
+- The web UI login's Caddyfile is part of `docker-compose.yml`, so the stack needs no other repo files.
+  `docker/Caddyfile` is gone.
+
 ## [0.2.0] - 2026-10-27
 
 ### Added
