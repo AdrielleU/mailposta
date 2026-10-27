@@ -97,7 +97,10 @@ case "${1:-sync-loop}" in
       # Rotate: daily files (sync log, run reports, host-side audit log) older than LOG_RETENTION_DAYS.
       find /logs -maxdepth 1 -type f \( -name '*.log' -o -name '*.jsonl' \) -mtime "+$LOG_RETENTION_DAYS" -delete
       log "[$(date -Is)] sleeping ${SYNC_INTERVAL}s"
-      sleep "$SYNC_INTERVAL"
+      # Wake early when /control/sync-now appears (a Microsoft sign-in just finished).
+      slept=0
+      while [ "$slept" -lt "$SYNC_INTERVAL" ] && [ ! -e /control/sync-now ]; do sleep 5; slept=$((slept + 5)); done
+      if [ -e /control/sync-now ]; then rm -f /control/sync-now; log "[$(date -Is)] syncing now (requested)"; fi
     done
     ;;
   *) exec "$@" ;;

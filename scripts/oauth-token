@@ -114,6 +114,8 @@ def login(account, quiet=False):
         if "access_token" in token:
             save(account, token)
             set_status(account, "signed_in")
+            if STATUS.is_dir():
+                (STATUS.parent / "sync-now").touch()  # the sync loop wakes within seconds and downloads the mail
             print(f"logged in; token stored for {account!r}", file=sys.stderr)
             return
         error = token.get("error")

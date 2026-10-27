@@ -57,8 +57,9 @@ def check(account):
     if r.returncode != 0:
         return "failed", last_line(r.stderr) or last_line(r.stdout) or f"himalaya exited with {r.returncode}", {}
     try:
-        folders = len(json.loads(r.stdout))
-    except (ValueError, TypeError):
+        listed = json.loads(r.stdout)
+        folders = len(listed["mailboxes"] if isinstance(listed, dict) else listed)
+    except (ValueError, TypeError, KeyError):
         folders = None
     found = f"{folders} folder{'s' if folders != 1 else ''}, " if folders is not None else ""
     return "ok", f"logged in to {a['imap_host']}: {found}{seconds}s", {"folders": folders, "seconds": seconds}
