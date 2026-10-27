@@ -289,7 +289,7 @@ def page(title, body, side=""):
     layout = f'<div class="layout">{side}<main>{body}</main></div>' if side else f"<main class=\"wide\">{body}</main>"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{e(title)} · MailPostA</title><link rel="stylesheet" href="/static/app.css"></head>
+<title>{e(title)} · MailPostA</title><link rel="icon" type="image/svg+xml" href="/static/logo.svg"><link rel="stylesheet" href="/static/app.css"></head>
 <body><header class="top"><a class="brand" href="/">MailPostA</a><nav class="topnav">{nav}</nav>
 <span class="ro">read-only</span></header>{layout}<script src="/static/app.js"></script></body></html>"""
 
@@ -428,6 +428,22 @@ def view_rules():
 
 # ---------------------------------------------------------------- static files
 
+# Same as assets/logo.svg (assets/ isn't in the image).
+LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MailPostA">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22c55e"/>
+      <stop offset="1" stop-color="#15803d"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <g fill="none" stroke="#fcd34d" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="108" y="148" width="296" height="216" rx="40"/>
+    <path d="M136 184 L256 274 L376 184"/>
+  </g>
+</svg>
+"""
+
 CSS = """
 :root{--bg:#f7f7f5;--panel:#fff;--text:#1d1d1b;--muted:#6b6b66;--line:#e4e3df;--accent:#2f5fd0;--accent-bg:#e8eefc;
 --ok:#1f7a3d;--ok-bg:#e3f4e8;--bad:#b42318;--bad-bg:#fde8e6;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -557,6 +573,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, view_rules())
             if p == "/static/app.css":
                 return self.send(200, CSS, "text/css; charset=utf-8")
+            if p in ("/static/logo.svg", "/favicon.ico"):
+                return self.send(200, LOGO_SVG, "image/svg+xml")
             if p == "/static/app.js":
                 return self.send(200, JS, "text/javascript; charset=utf-8")
             return self.not_found()

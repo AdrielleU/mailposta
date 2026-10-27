@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.svg" alt="MailPostA logo" width="120"></p>
+
 # MailPostA
 
 **Your AI mailroom: reads, sorts, drafts. Never sends.**
@@ -45,6 +47,34 @@ See [Credits](#credits).
    refuses anything that looks like sending, and logs every call.
 4. **The web UI** (`mailposta-web`, behind `mailposta-login`) shows the same local data in a browser,
    read-only.
+
+## Requirements
+
+Docker (with Compose) or Podman (with podman-compose) on Linux or macOS. On Windows, use WSL2 (see [Windows](#windows)).
+It runs on amd64 and arm64, so a Raspberry Pi 4 is enough.
+
+**Disk**
+
+| What | Size |
+|---|---|
+| `mailposta` image (used by both `mail` and `web`) | ~170 MB |
+| `caddy` image (`login`) | ~67 MB |
+| `data/mail`: last `RETENTION_DAYS` of each account, attachments included | often 100 MB–1 GB per account |
+| `data/index`: notmuch search index | about 10–30% of `data/mail` |
+| `data/logs`: kept `LOG_RETENTION_DAYS` | a few MB |
+
+Leave 1–3 GB free for a typical 2–3 account setup.
+
+**Memory and CPU** (rough idle figures; check yours with `docker stats --no-stream`)
+
+| Container | RAM | CPU |
+|---|---|---|
+| `mailposta-mail` (sync loop) | ~10–30 MB idle; tens of MB more during a sync | short bursts each `SYNC_INTERVAL`; the first sync is the heaviest |
+| `mailposta-web` (Python web UI) | ~20–40 MB | only while you browse |
+| `mailposta-login` (Caddy) | ~10–20 MB | negligible |
+
+That's about 50–100 MB in total when idle and around 200 MB at peak. 1 CPU core and 512 MB of free RAM is plenty.
+The compose file sets no memory or CPU limits.
 
 ## Setup
 
