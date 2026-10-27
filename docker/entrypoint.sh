@@ -8,6 +8,31 @@ set -eu
 : "${RETENTION_DAYS:=60}" "${SYNC_INTERVAL:=900}" "${LOG_RETENTION_DAYS:=30}"
 export RETENTION_DAYS SYNC_INTERVAL LOG_RETENTION_DAYS
 
+# SYNC_HOURS=START-END (local hours, 0-24, end not included; 22-6 wraps past midnight). Empty: around the clock.
+num() { echo "$1" | sed 's/^0*//; s/^$/0/'; }
+if [ -n "${SYNC_HOURS:-}" ]; then
+  echo "$SYNC_HOURS" | grep -Eq '^[0-9]{1,2}-[0-9]{1,2}$' || { echo "SYNC_HOURS must look like 7-22, got '$SYNC_HOURS'" >&2; exit 1; }
+  hours_start=$(num "${SYNC_HOURS%-*}"); hours_end=$(num "${SYNC_HOURS#*-}")
+  if [ "$hours_start" -gt 24 ] || [ "$hours_end" -gt 24 ] || [ $((hours_start % 24)) -eq $((hours_end % 24)) ]; then
+    echo "SYNC_HOURS: hours are 0-24 and start can't equal end (leave it empty to sync around the clock)" >&2; exit 1
+  fi
+  hours_start=$((hours_start % 24)); hours_end=$((hours_end % 24))
+fi
+in_sync_hours() {
+  [ -z "${SYNC_HOURS:-}" ] && return 0
+  h=$(num "$(date +%H)")
+  if [ "$hours_start" -lt "$hours_end" ]; then
+    [ "$h" -ge "$hours_start" ] && [ "$h" -lt "$hours_end" ]
+  else
+    [ "$h" -ge "$hours_start" ] || [ "$h" -lt "$hours_end" ]
+  fi
+}
+# Seconds from now until the next HH:00 that starts the window.
+until_sync_hours() {
+  h=$(num "$(date +%H)"); m=$(num "$(date +%M)"); s=$(num "$(date +%S)")
+  echo $(( ((hours_start - h + 24) % 24) * 3600 - m * 60 - s ))
+}
+
 mkdir -p /mail /state /logs
 # Validates ACCOUNTS, renders ~/.mbsyncrc + himalaya config, prints the names.
 # The first account listed is himalaya's default.
@@ -48,6 +73,12 @@ sync_account() {
 case "${1:-sync-loop}" in
   sync-loop)
     while true; do
+      if ! in_sync_hours; then
+        wait=$(until_sync_hours)
+        log "[$(date -Is)] outside SYNC_HOURS=$SYNC_HOURS, sleeping ${wait}s until ${hours_start}:00"
+        sleep "$wait"
+        continue
+      fi
       started=$(date +%s)
       rm -rf /tmp/run && mkdir -p /tmp/run
       for a in $accounts; do sync_account "$a"; done

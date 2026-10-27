@@ -296,6 +296,7 @@ All settings live in `.env`. After changing it, run `docker compose up -d`.
 | `<NAME>_OAUTH_CLIENT_ID`, `_OAUTH_TENANT` | Thunderbird's client, `organizations` | Outlook sign-in |
 | `RETENTION_DAYS` | 60 | Days of mail kept locally |
 | `SYNC_INTERVAL` | 900 | Seconds between syncs |
+| `SYNC_HOURS` | empty (around the clock) | Only sync between these local hours, e.g. `7-22` (7:00 to 22:00) or `22-6` (overnight) |
 | `LOG_RETENTION_DAYS` | 30 | Days of logs kept |
 | `TZ` | `America/Phoenix` | Timezone for logs and dates |
 | `MAILPOSTA_LOGIN_USER`, `_LOGIN_HASH` | — (required) | Web UI login; the hash is bcrypt, in single quotes |
