@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-28
+
 ### Security
 - `bin/mail` refuses flags that reach files inside the mail container: `-c`/`--config` (a himalaya config
   can run commands, and `data/control/requests` is writable by anyone), `--log-file`, `--attach`,
