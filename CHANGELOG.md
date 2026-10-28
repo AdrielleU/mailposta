@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-28
+
 ### Added
 - Drafts: each account's Drafts folder now syncs down by default (`[Gmail]/Drafts`, Outlook `Drafts`), the
   web UI has a **Drafts** view across accounts and a draft count per account, and drafts list who they're for.
