@@ -34,6 +34,8 @@ until_sync_hours() {
 }
 
 mkdir -p /mail /state /logs /control/requests /control/status
+# "Sync now" marks from before a restart: the first run below syncs everything anyway.
+rm -f /control/status/sync-*.json
 # The web container has no capabilities, so under rootful Docker it can only write here if anyone may.
 # It holds nothing but empty request files ("sign in", "test connection"; see scripts/control-watch).
 chmod 777 /control/requests
@@ -85,9 +87,21 @@ sync_account() {
 #   sync_state <state> <current> <finished> <next-epoch>
 sync_state() {
   printf '{"state":"%s","current":"%s","accounts":"%s","done":"%s","started":%s,"next_at":%s,"updated":%s}\n' \
-    "$1" "$2" "$accounts" "$3" "${started:-0}" "${4:-0}" "$(date +%s)" > /control/status/.sync.json.tmp
+    "$1" "$2" "${todo:-$accounts}" "$3" "${started:-0}" "${4:-0}" "$(date +%s)" > /control/status/.sync.json.tmp
   chmod 644 /control/status/.sync.json.tmp
   mv /control/status/.sync.json.tmp /control/status/sync.json
+}
+
+# Sleeps up to $1 seconds, waking early when /control/sync-now appears (Sync now in the web UI, or a
+# Microsoft sign-in). Sets $only to the accounts it names (empty: all of them).
+only=""
+sleep_until_woken() {
+  slept=0
+  while [ "$slept" -lt "$1" ] && [ ! -e /control/sync-now ]; do sleep 5; slept=$((slept + 5)); done
+  if [ -e /control/sync-now ]; then
+    only=$(tr -s ' \n' '  ' < /control/sync-now | sed 's/^ *//; s/ *$//'); rm -f /control/sync-now
+    log "[$(date -Is)] syncing now (requested${only:+: $only})"
+  fi
 }
 
 case "${1:-sync-loop}" in
@@ -95,17 +109,26 @@ case "${1:-sync-loop}" in
     # Runs what the web UI asks for: Microsoft sign-ins and connection tests.
     control-watch 2>&1 | logpipe_daily &
     while true; do
-      if ! in_sync_hours; then
+      # A requested sync runs even outside SYNC_HOURS.
+      if [ -z "$only" ] && ! in_sync_hours; then
         wait=$(until_sync_hours)
         log "[$(date -Is)] outside SYNC_HOURS=$SYNC_HOURS, sleeping ${wait}s until ${hours_start}:00"
         sync_state paused "" "" "$(( $(date +%s) + wait ))"
-        sleep "$wait"
+        sleep_until_woken "$wait"
         continue
       fi
+      # Just the requested accounts (Sync now), or all of them.
+      todo=""
+      for a in $accounts; do
+        case " $only " in *" $a "*) todo="$todo $a" ;; esac
+      done
+      [ -n "$todo" ] || todo=$accounts
+      only=""
       started=$(date +%s)
       rm -rf /tmp/run && mkdir -p /tmp/run
       finished=""
-      for a in $accounts; do
+      for a in $todo; do
+        rm -f "/control/status/sync-$a.json"
         sync_state running "$a" "$finished"
         sync_account "$a"
         finished="$finished $a:$(sed -n 's/^status=//p' "/tmp/run/$a.env")"
@@ -113,15 +136,13 @@ case "${1:-sync-loop}" in
       sync_state running "" "$finished"
       # Index the local copies and apply data/rules (local tags only).
       tag-mail --report /tmp/run/tags.json 2>&1 | logpipe
-      run-report "$started" $accounts | logpipe
+      run-report "$started" $todo | logpipe
       # Rotate: daily files (sync log, run reports, host-side audit log) older than LOG_RETENTION_DAYS.
       find /logs -maxdepth 1 -type f \( -name '*.log' -o -name '*.jsonl' \) -mtime "+$LOG_RETENTION_DAYS" -delete
       log "[$(date -Is)] sleeping ${SYNC_INTERVAL}s"
+      todo=""
       sync_state idle "" "" "$(( $(date +%s) + SYNC_INTERVAL ))"
-      # Wake early when /control/sync-now appears (a Microsoft sign-in just finished).
-      slept=0
-      while [ "$slept" -lt "$SYNC_INTERVAL" ] && [ ! -e /control/sync-now ]; do sleep 5; slept=$((slept + 5)); done
-      if [ -e /control/sync-now ]; then rm -f /control/sync-now; log "[$(date -Is)] syncing now (requested)"; fi
+      sleep_until_woken "$SYNC_INTERVAL"
     done
     ;;
   *) exec "$@" ;;

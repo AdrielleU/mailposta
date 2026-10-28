@@ -11,6 +11,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **Open in Gmail** / **Open draft in Gmail** on each message (signed in as the right account) and **All drafts
   in Gmail**, so a draft Claude saved can be checked and sent from Gmail. Outlook: **Open Drafts in Outlook**.
   The mail container shares each account's name, type and address with the web UI for this (nothing else).
+- **Sync now** on each account card: syncs just that account right away (also outside `SYNC_HOURS`) and
+  shows QUEUED, then SYNCING. Each card now shows that account's own latest result, since such a run covers
+  only one account.
 
 ### Changed
 - The web UI no longer fails a whole page when a file can't be read (e.g. wrong owner on `data/`): it shows

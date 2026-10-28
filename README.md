@@ -331,7 +331,7 @@ itself is never published.
 
 | Page | What's there |
 |---|---|
-| **Overview** | One card per account: label, personal/business, message, unread and draft counts, last sync status and error, and **Test connection** (logs in to the server and lists folders, downloads nothing; shows Connected or the reason it failed). Below them, **Microsoft sign-in** for each Outlook account: signed in or not, and a **Sign in with Microsoft** button |
+| **Overview** | One card per account: label, personal/business, message, unread and draft counts, last sync status and error, **Sync now** (syncs just that account right away, even outside `SYNC_HOURS`; shows QUEUED, then SYNCING), and **Test connection** (logs in to the server and lists folders, downloads nothing; shows Connected or the reason it failed). Below them, **Microsoft sign-in** for each Outlook account: signed in or not, and a **Sign in with Microsoft** button |
 | **Sign in** | The code to enter at microsoft.com/devicelogin, with a Copy button; updates by itself until you're signed in |
 | **Mail** | All accounts or one account/folder, grouped Business / Personal in the sidebar, **Drafts** across all accounts, tag filters, search by sender/recipient/subject, newest first |
 | **Message** | Headers, body as plain text, tags, attachments to download, and buttons: **Open in Gmail** / **Open draft in Gmail** (that message in Gmail, signed in as the right account; on a phone it may open the Gmail app), **All drafts in Gmail**, **Open Drafts in Outlook**, **Copy body**, **Copy headers + body**, **Copy Message-ID** (for `delete-both`), **Raw**, **Download .eml** |
@@ -351,7 +351,7 @@ It **can't change your mail**:
 - The container gets every folder read-only, has no `.env`, passwords or tokens, and never sees `data/state`.
 - It runs with a read-only filesystem and no Linux capabilities.
 - Its one write: an empty file in `data/control/requests/` asking the mail container to start a Microsoft
-  sign-in or test a connection. The mail container does the work and keeps tokens in `data/state`; the web
+  sign-in, test a connection or sync an account now. The mail container does the work and keeps tokens in `data/state`; the web
   UI only reads the results (`data/control/status/`: states, the sign-in code, test results). The buttons
   only work from the web UI's own pages (other sites can't trigger them), and nothing is signed in until
   someone enters the code on Microsoft's site and signs in.

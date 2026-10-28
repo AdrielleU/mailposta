@@ -4,6 +4,9 @@
 The web UI can't do anything itself: it only creates an empty file in /control/requests/
   signin-<account>   start a Microsoft sign-in      -> oauth-token web-login <account>
   check-<account>    test the account's connection  -> check-connection --status <account>
+  sync-<account>     sync that account now           -> adds it to /control/sync-now, which wakes the sync
+                                                        loop (entrypoint.sh); /control/status/sync-<account>.json
+                                                        says "queued" until its sync starts
 and reads the results from /control/status/. Requests for unknown accounts or older than two minutes are
 dropped, and each account runs at most one of each at a time. Every 30 seconds it also refreshes the
 sign-in states and lists which accounts can be tested.
@@ -19,7 +22,8 @@ CONTROL = Path("/control")
 REQUESTS, STATUS = CONTROL / "requests", CONTROL / "status"
 CONFIG = Path.home() / ".config/emailassist"
 MAX_AGE = 120
-REQUEST = re.compile(r"(signin|check)-([a-z][a-z0-9]*)")
+REQUEST = re.compile(r"(signin|check|sync)-([a-z][a-z0-9]*)")
+SYNC_NOW = CONTROL / "sync-now"
 
 
 def log(msg):
@@ -52,6 +56,20 @@ def refresh(accounts):
                 f.unlink(missing_ok=True)  # interrupted by a restart; recreated as idle next time
 
 
+def queue_sync(name):
+    """Adds the account to /control/sync-now (names, one per line; empty means all) and marks it queued."""
+    have = SYNC_NOW.read_text().split() if SYNC_NOW.exists() else []
+    if SYNC_NOW.exists() and not have:
+        return  # a sync of every account is already asked for
+    tmp = CONTROL / f".sync-now.{os.getpid()}"
+    tmp.write_text("\n".join(dict.fromkeys(have + [name])) + "\n")
+    os.replace(tmp, SYNC_NOW)
+    tmp = STATUS / f".sync-{name}.{os.getpid()}"
+    tmp.write_text(json.dumps({"account": name, "state": "queued", "updated": time.time()}))
+    tmp.chmod(0o644)
+    os.replace(tmp, STATUS / f"sync-{name}.json")
+
+
 def main():
     REQUESTS.mkdir(parents=True, exist_ok=True)
     STATUS.mkdir(parents=True, exist_ok=True)
@@ -76,6 +94,9 @@ def main():
             if f.name in running and running[f.name].poll() is None:
                 continue  # already running for this account
             log(f"{kind} {name}")
+            if kind == "sync":
+                queue_sync(name)
+                continue
             cmd = ["oauth-token", "web-login", name] if kind == "signin" else ["check-connection", "--status", name]
             running[f.name] = subprocess.Popen(cmd)
         for key in [k for k, proc in running.items() if proc.poll() is not None]:

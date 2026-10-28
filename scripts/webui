@@ -454,9 +454,15 @@ def view_overview():
     meta = account_meta()
     runs = run_reports(2)
     last = runs[0] if runs else None
-    by_acct = {a["account"]: a for a in (last or {}).get("accounts", [])}
+    # Each account's latest result: a Sync now run covers only that account, so look back across runs.
+    by_acct = {}
+    for run in runs:
+        for r in run.get("accounts", []):
+            by_acct.setdefault(r["account"], r)
     checks = check_states()
     sync = sync_state()
+    queued = {a for a, st in control_states("sync").items() if st.get("state") == "queued"}
+    queued |= {a for a in checks if requested("sync", a)}
     cards = []
     # Accounts with local mail, plus any the last run reported or that can be tested (invalid, never synced).
     for a in dict.fromkeys(accounts() + list(by_acct) + list(checks)):
@@ -472,8 +478,11 @@ def view_overview():
                 # Invalid in the last run, but the mail container accepts it now (it only lists valid accounts
                 # for testing): the settings were fixed since, so don't show the old INVALID.
                 r = {**r, "status": "fixed", "error": None}
-            if live_pill(a, sync):
-                status = live_pill(a, sync)
+            live = live_pill(a, sync)
+            if live:
+                status = live
+            elif a in queued:
+                status = '<span class="pill sync">QUEUED</span>'
             elif r and r["status"] == "fixed":
                 status = '<span class="pill">SETTINGS OK</span>'
             else:
@@ -491,7 +500,7 @@ def view_overview():
             cards.append(f"""<div class="card"><div class="card-h"><a href="{url('/m', acct=a)}"><b>{e(label)}</b></a>{status}</div>
     {f'<div class="muted">{e(sub)}</div>' if sub else ''}
     <div class="stats"><span><b>{len(msgs)}</b> message{plural(len(msgs))}</span><span><b>{unread}</b> unread</span>
-    <span><b>{len(folders(a))}</b> folder{plural(len(folders(a)))}</span>{drafts_stat}</div>{err}{check_line(a, checks.get(a))}</div>""")
+    <span><b>{len(folders(a))}</b> folder{plural(len(folders(a)))}</span>{drafts_stat}</div>{err}{check_line(a, checks.get(a), syncable=not live and a not in queued)}</div>""")
         except Exception as exc:  # one unreadable account mustn't take the whole overview down
             problem(a, exc)
             cards.append(f'<div class="card"><div class="card-h"><b>{e(a)}</b><span class="pill bad">UNREADABLE</span></div>'
@@ -524,18 +533,21 @@ def view_overview():
     # Refresh while something is happening: quickly during a connection test, slower during a sync run.
     busy = any(c.get("state") == "running" for c in checks.values())
     syncing = bool(sync and sync.get("state") == "running")
-    refresh = 3 if busy else 10 if syncing else 0
+    refresh = 3 if busy or queued else 10 if syncing else 0
     return page("Overview", body, head=f'<meta http-equiv="refresh" content="{refresh}">' if refresh else "")
 
 
-def check_line(acct, st):
-    """The connection-test row on an account card: last result and a Test connection button."""
+def check_line(acct, st, syncable=True):
+    """The connection-test row on an account card: last result, Sync now and Test connection buttons."""
     if st is None:
         return ""
     state = st.get("state")
+    sync_btn = (f'<form class="inline" method="post" action="/sync/{acct}"><button class="btn">Sync now</button></form>'
+                if syncable else "")
     if state == "running":
-        return '<div class="check"><span class="pill">TESTING…</span></div>'
-    button = f'<form class="inline" method="post" action="/check/{acct}"><button class="btn">Test connection</button></form>'
+        return f'<div class="check"><span class="pill">TESTING…</span>{sync_btn}</div>'
+    button = (sync_btn + f'<form class="inline" method="post" action="/check/{acct}">'
+              '<button class="btn">Test connection</button></form>')
     if state in ("ok", "failed", "invalid"):
         ago = when(st["updated"]) if st.get("updated") else ""
         pill = f'<span class="pill {"ok" if state == "ok" else "bad"}">{"CONNECTED" if state == "ok" else state.upper()}</span>'
@@ -773,7 +785,7 @@ font:inherit;font-size:14px;font-weight:500;cursor:pointer;transition:border-col
 .body{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;white-space:pre-wrap;word-break:break-word;font:14px/1.5 var(--mono);margin:8px 0}
 .atts{padding-left:18px}
 .inline{display:inline}.check{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;font-size:13px}
-.check .btn{margin-left:auto;font-size:13px;padding:4px 10px}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.check .btn{font-size:13px;padding:4px 10px}.check form.inline:first-of-type{margin-left:auto}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
 .btn.primary:hover{background:var(--accent-strong);border-color:var(--accent-strong);color:#fff}
 @media (prefers-color-scheme:dark){.btn.primary,.btn.primary:hover{color:#0b1a10}}
 .steps{line-height:2.2;padding-left:22px}.bigcode{font-size:22px;font-weight:700;letter-spacing:.08em;padding:2px 10px;
@@ -909,11 +921,11 @@ class Handler(BaseHTTPRequestHandler):
         return bool(origin and host) and urllib.parse.urlsplit(origin).netloc == host
 
     def do_POST(self):
-        # The only POSTs: /signin/<account> and /check/<account>, which ask the mail container to act.
+        # The only POSTs: /signin/<account>, /check/<account> and /sync/<account>, which ask the mail container to act.
         p = urllib.parse.urlsplit(self.path).path
         self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096))
         kind, _, acct = p.strip("/").partition("/")
-        if kind not in ("signin", "check"):
+        if kind not in ("signin", "check", "sync"):
             return self.send(405, "read-only", "text/plain")
         if not self.same_origin():
             return self.send(403, "refused: not sent from this site", "text/plain")
