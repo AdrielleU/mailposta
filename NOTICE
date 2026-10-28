@@ -37,3 +37,10 @@ trademarks of Microsoft Corporation. Claude and Claude Code are trademarks of
 Anthropic. MailPostA is an independent project, not affiliated with or
 endorsed by any of them or by the projects listed above. Their names are used
 only to describe what MailPostA works with.
+
+Provider icons (assets/providers/, shown on the web UI's account cards to say which service an account
+is on): the Gmail icon (2020) and the Microsoft Outlook icon (2025) from Wikimedia Commons,
+https://commons.wikimedia.org/wiki/File:Gmail_icon_(2020).svg and
+https://commons.wikimedia.org/wiki/File:Microsoft_Outlook_Icon_(2025%E2%80%93present).svg.
+Gmail is a trademark of Google LLC and Outlook a trademark of Microsoft Corporation. They are used only to
+identify the provider; MailPostA isn't affiliated with or endorsed by either.

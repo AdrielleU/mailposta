@@ -29,6 +29,8 @@ RUN case "${TARGETARCH:-amd64}" in \
 COPY LICENSE NOTICE /usr/share/doc/mailposta/
 COPY config/ /templates/
 COPY scripts/ /opt/emailassist/
+# Gmail and Outlook icons for the web UI's account cards (served by it; the page loads nothing from outside).
+COPY assets/providers/ /usr/share/mailposta/icons/
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /opt/emailassist/*
 

@@ -16,6 +16,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
   only one account.
 
 ### Changed
+- Overview: one card per account with a Gmail or Outlook icon and the account's address. Outlook cards show
+  the Microsoft sign-in state with **Sign in with Microsoft** / **Sign in again**, replacing the separate
+  Microsoft sign-in section.
 - The web UI no longer fails a whole page when a file can't be read (e.g. wrong owner on `data/`): it shows
   what it could, a warning listing what it couldn't, and the overview marks just that account UNREADABLE.
 

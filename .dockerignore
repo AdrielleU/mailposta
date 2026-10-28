@@ -4,5 +4,6 @@
 !config/
 !scripts/
 !docker/
+!assets/providers/
 !LICENSE
 !NOTICE
