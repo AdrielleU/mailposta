@@ -59,12 +59,24 @@ if [ "${1:-}" = "--tool" ]; then
   run "$@"
 fi
 
+# Flags that reach files inside the container are refused too: a different config can run commands
+# (and /control/requests is writable by anyone), --log-file writes anywhere as root, --attach/--body-file/
+# --signature-file read any file (the passwords in /proc/1/environ, the tokens) into a draft, and
+# attachment download --dir can drop a mail attachment over the container's scripts.
+blocked() { audit refused; echo "bin/mail: refused: $1" >&2; exit 2; }
+attachment=""
+for arg in "$@"; do [ "$arg" = attachment ] && attachment=yes; done
 prev=""
 for arg in "$@"; do
   case "$arg" in
     --send|--send=*) refuse "--send" ;;
     smtp) refuse "smtp commands" ;;
     send) case "$prev" in message|msg) refuse "message send" ;; esac ;;
+    -c|-c?*|--config|--config=*) blocked "-c/--config (only the generated config is used)" ;;
+    --log-file|--log-file=*) blocked "--log-file" ;;
+    --attach|--attach=*|--body-file|--body-file=*|--signature-file|--signature-file=*)
+      blocked "$arg (paths are inside the container; write the text with --body)" ;;
+    -d|-d?*|--dir|--dir=*) [ -n "$attachment" ] && blocked "attachment download $arg (open attachments in the web UI)" ;;
   esac
   prev="$arg"
 done

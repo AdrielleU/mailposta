@@ -63,7 +63,8 @@ See [Credits](#credits).
 2. **himalaya**, inside the container, reads the local copies (`-a <name>`) or the live server
    (`-a <name>-cloud`) and saves drafts. It has no SMTP configured, so it can't send.
 3. **`bin/mail`** is what you and Claude Code run on the host. It forwards to himalaya in the container,
-   refuses anything that looks like sending, and logs every call.
+   refuses anything that looks like sending or that would reach files inside the container (a different
+   config, `--attach`, `--body-file`, `--log-file`), and logs every call.
 4. **The web UI** (`mailposta-web`, behind `mailposta-login`) shows the same local data in a browser,
    read-only.
 

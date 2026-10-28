@@ -26,7 +26,7 @@ bin/mail -a personal-cloud envelope search subject invoice and before 2026-08-01
 bin/mail --tool check                              # test every account's server login (read-only)
 
 # Drafts (saved to that account's server Drafts folder; the user reviews and sends them)
-bin/mail -a work-cloud message compose -t bob@x.y -s "Subject" --body "..." --save drafts   # --body-file paths are inside the container, so use --body
+bin/mail -a work-cloud message compose -t bob@x.y -s "Subject" --body "..." --save drafts   # use --body (bin/mail refuses --body-file, --attach, -c and --log-file)
 bin/mail -a work-cloud message reply <ID> -m INBOX --body "..." --save drafts
 ```
 For a reply, look up the message ID on the `-cloud` account (local IDs are Maildir filenames, not server UIDs).

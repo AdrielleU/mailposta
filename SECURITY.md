@@ -36,6 +36,9 @@ How MailPostA is meant to stay safe, so you can check it holds:
   send commands. Claude Code's permission rules also block direct container access, `smtplib` and `sendmail`.
 - **Secrets stay out of files:** they live only in `.env` (mode 600) and `data/state/`, and configs fetch
   them at runtime. The web UI container gets neither.
+- **`bin/mail` is a gate, not just a shortcut:** besides sending, it refuses anything that reaches files
+  inside the mail container (`-c`/`--config`, `--log-file`, `--attach`, `--body-file`, `--signature-file`,
+  `attachment download --dir`), so a caller limited to `bin/mail` can't read the passwords or tokens.
 - **The web UI is locked down:** read-only, no Linux capabilities, a read-only filesystem, behind a Caddy
   bcrypt login, bound to localhost by default. HTML mail is shown as plain text, never rendered.
 - **Everything is logged:** every `bin/mail` call goes to `data/logs/audit-*.log`.

@@ -5,6 +5,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- `bin/mail` refuses flags that reach files inside the mail container: `-c`/`--config` (a himalaya config
+  can run commands, and `data/control/requests` is writable by anyone), `--log-file`, `--attach`,
+  `--body-file` and `--signature-file` (they could read the passwords or tokens into a draft), and
+  `attachment download --dir`. Write drafts with `--body`; open attachments in the web UI.
+
 ## [0.2.4] - 2026-10-28
 
 ### Added

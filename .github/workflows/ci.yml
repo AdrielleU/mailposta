@@ -25,6 +25,15 @@ jobs:
       - name: shellcheck
         run: shellcheck -S warning bin/mail bin/setup bin/daily scripts/prune docker/entrypoint.sh
 
+      - name: bin/mail refuses sending and container file access
+        run: |
+          for args in "message send 1" "-a x --send" "-c /control/requests/x.toml envelope list" "--config=/tmp/x account list" \
+                      "--log-file /opt/x envelope list" "message compose -t a@b.c --attach /proc/1/environ --save drafts" \
+                      "message reply 1 --body-file=/state/oauth/x.json" "attachment download 1 -d /opt"; do
+            code=0; bin/mail $args >/dev/null 2>&1 </dev/null || code=$?
+            if [ "$code" -ne 2 ]; then echo "bin/mail $args was not refused (exit $code)" >&2; exit 1; fi
+          done
+
       - name: Python syntax
         run: |
           for f in $(grep -l '^#!/usr/bin/env python3' scripts/*); do
