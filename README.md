@@ -331,13 +331,20 @@ itself is never published.
 
 | Page | What's there |
 |---|---|
-| **Overview** | One card per account: label, personal/business, message and unread counts, last sync status and error, and **Test connection** (logs in to the server and lists folders, downloads nothing; shows Connected or the reason it failed). Below them, **Microsoft sign-in** for each Outlook account: signed in or not, and a **Sign in with Microsoft** button |
+| **Overview** | One card per account: label, personal/business, message, unread and draft counts, last sync status and error, and **Test connection** (logs in to the server and lists folders, downloads nothing; shows Connected or the reason it failed). Below them, **Microsoft sign-in** for each Outlook account: signed in or not, and a **Sign in with Microsoft** button |
 | **Sign in** | The code to enter at microsoft.com/devicelogin, with a Copy button; updates by itself until you're signed in |
-| **Mail** | All accounts or one account/folder, grouped Business / Personal in the sidebar, tag filters, search by sender/recipient/subject, newest first |
-| **Message** | Headers, body as plain text, tags, attachments to download, and buttons: **Copy body**, **Copy headers + body**, **Copy Message-ID** (for `delete-both`), **Raw**, **Download .eml** |
+| **Mail** | All accounts or one account/folder, grouped Business / Personal in the sidebar, **Drafts** across all accounts, tag filters, search by sender/recipient/subject, newest first |
+| **Message** | Headers, body as plain text, tags, attachments to download, and buttons: **Open in Gmail** / **Open draft in Gmail** (that message in Gmail, signed in as the right account; on a phone it may open the Gmail app), **All drafts in Gmail**, **Open Drafts in Outlook**, **Copy body**, **Copy headers + body**, **Copy Message-ID** (for `delete-both`), **Raw**, **Download .eml** |
 | **Run reports** | Every sync run from the last 7 days, per account, with tag counts; copy as JSON lines |
 | **Logs** | The daily sync, run-report and audit logs, each with a Copy button |
 | **Rules** | `accounts.yaml` and `tags.yaml`, read-only |
+
+**Sending drafts.** Drafts Claude saves (`--save drafts`) go to the account's Drafts folder on the server and
+show up under **Drafts** after the next sync. Open one, check it, then **Open draft in Gmail** and send it from
+Gmail. MailPostA itself never sends. (Outlook can't link to a single message, so that button opens Outlook's Drafts.)
+If an account sets its own `<NAME>_SYNC_PATTERNS`, add its Drafts folder there to see drafts.
+
+If a page shows **"Some files couldn't be read"**, the rest still works; see [Troubleshooting](#troubleshooting).
 
 It **can't change your mail**:
 - There is no code that sends, moves, deletes or edits mail, rules or settings.
@@ -396,7 +403,7 @@ All settings live in `.env`. After changing it, run `docker compose up -d`.
 | `<NAME>_TYPE` | — | `gmail` or `outlook` |
 | `<NAME>_ADDRESS`, `_DISPLAY_NAME` | — | The account's address and your name |
 | `<NAME>_PASSWORD` | — | Gmail app password (Gmail only) |
-| `<NAME>_SYNC_PATTERNS` | Inbox + Sent | Folders to download (mbsync patterns) |
+| `<NAME>_SYNC_PATTERNS` | Inbox, Sent, Drafts | Folders to download (mbsync patterns) |
 | `<NAME>_DELETE_FOLDERS`, `_TRASH_FOLDER`, `_DRAFTS_FOLDER` | per type | Folders used by `delete-both` and drafts |
 | `<NAME>_OAUTH_CLIENT_ID`, `_OAUTH_TENANT` | Thunderbird's client, `organizations` | Outlook sign-in |
 | `RETENTION_DAYS` | 60 | Days of mail kept locally |
@@ -450,6 +457,11 @@ endings when the repo is checked out on Windows.
   That account is skipped; the others keep syncing. Fix `.env`, then `docker compose up -d`.
 - **`Couldn't send the request` in the web UI, or compose says `data/control` is missing:** run `bin/setup`
   (creates `data/control/requests` and `data/control/status`), then `docker compose up -d`.
+- **`PermissionError` or "Some files couldn't be read" in the web UI, or `Permission denied` in the sync log:**
+  `data/` belongs to a different user than the containers run as, usually after copying it from another
+  machine or folder. With Docker (containers run as root): `docker compose down && sudo chown -R root:root data
+  && sudo chmod 700 data/state && docker compose up -d`. Rootless Podman: `chown` it to the user that runs
+  podman. On SELinux systems, also keep `data/` on a local disk: containers can't use NFS shares by default.
 - **Removing an account:** take it out of `ACCOUNTS` and restart. Its local copy stays in `data/mail/<name>` until you delete it.
 
 ## Project layout

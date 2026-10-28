@@ -39,24 +39,46 @@ NOTMUCH_ENV = dict(os.environ, NOTMUCH_CONFIG="/tmp/notmuch-config")
 # ---------------------------------------------------------------- data access (read-only)
 
 _cache, _cache_lock = {}, threading.Lock()
+# Per request: files that couldn't be read. The page still renders without them and lists them in a banner.
+_req = threading.local()
+
+
+def problem(what, exc):
+    """Notes something unreadable for this page's warning banner instead of failing the whole page."""
+    where = getattr(exc, "filename", None)
+    msg = f"{what}: {getattr(exc, 'strerror', None) or exc}" + (f" ({where})" if where else "")
+    probs = getattr(_req, "problems", None)
+    if probs is not None and msg not in probs:
+        probs.append(msg)
 
 
 def account_meta():
     try:
         return (yaml.safe_load((RULES / "accounts.yaml").read_text()) or {}).get("accounts") or {}
-    except (OSError, yaml.YAMLError):
+    except FileNotFoundError:
+        return {}
+    except (OSError, yaml.YAMLError, AttributeError) as exc:
+        problem("data/rules/accounts.yaml", exc)
         return {}
 
 
 def accounts():
     meta = account_meta()
-    found = [d.name for d in MAIL.iterdir() if d.is_dir() and not d.name.startswith(".")] if MAIL.exists() else []
+    try:
+        found = [d.name for d in MAIL.iterdir() if d.is_dir() and not d.name.startswith(".")] if MAIL.exists() else []
+    except OSError as exc:
+        problem("mail folder", exc)
+        found = []
     return sorted(found, key=lambda n: (list(meta).index(n) if n in meta else len(meta), n))
 
 
 def folders(acct):
     base = MAIL / acct
-    names = [d.name for d in base.iterdir() if (d / "cur").is_dir()] if base.exists() else []
+    try:
+        names = [d.name for d in base.iterdir() if (d / "cur").is_dir()] if base.exists() else []
+    except OSError as exc:
+        problem(f"{acct}'s folders", exc)
+        names = []
     return sorted(names, key=lambda n: (n != "INBOX", n.lower()))
 
 
@@ -103,7 +125,43 @@ def summary(acct, folder, path):
     return s
 
 
-def list_messages(acct=None, folder=None, q="", tag=""):
+def is_drafts(folder):
+    """Gmail's [Gmail]/Drafts arrives as "[Gmail].Drafts", Outlook's as "Drafts"."""
+    return folder.rsplit(".", 1)[-1].lower() == "drafts"
+
+
+def account_info():
+    """{name: {"type", "address"}} from the mail container (configure); empty until it has started."""
+    try:
+        return {a["name"]: a for a in json.loads((CONTROL_STATUS / "accounts.json").read_text())}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        problem("account list", exc)
+        return {}
+
+
+def open_links(acct, folder, message_id):
+    """[(label, url)] opening this message in the provider's own web app, where drafts are checked and sent."""
+    info = account_info().get(acct) or {}
+    drafts = is_drafts(folder)
+    if info.get("type") == "outlook":
+        # Outlook on the web has no link by Message-ID: open the folder.
+        return [("Open Drafts in Outlook", "https://outlook.office.com/mail/drafts")] if drafts else \
+            [("Open Outlook", "https://outlook.office.com/mail/inbox")]
+    if info.get("type") == "gmail":
+        base = f"https://mail.google.com/mail/?authuser={urllib.parse.quote(info.get('address', ''))}"
+        links = []
+        if message_id:
+            search = urllib.parse.quote(f"rfc822msgid:{message_id.strip().strip('<>')}", safe="")
+            links.append(("Open draft in Gmail" if drafts else "Open in Gmail", f"{base}#search/{search}"))
+        if drafts:
+            links.append(("All drafts in Gmail", f"{base}#drafts"))
+        return links
+    return []
+
+
+def list_messages(acct=None, folder=None, q="", tag="", box=""):
     only = notmuch_files(tag) if tag else None
     words = q.lower().split()
     out = []
@@ -113,14 +171,24 @@ def list_messages(acct=None, folder=None, q="", tag=""):
         for fo in folders(a):
             if folder and fo != folder:
                 continue
+            if box == "drafts" and not is_drafts(fo):
+                continue
             for sub in ("cur", "new"):
                 d = MAIL / a / fo / sub
-                for p in d.iterdir() if d.is_dir() else []:
+                try:
+                    files = list(d.iterdir()) if d.is_dir() else []
+                except OSError as exc:
+                    problem(f"{a} / {fo}", exc)
+                    continue
+                for p in files:
                     if only is not None and str(p) not in only:
                         continue
                     try:
                         s = summary(a, fo, p)
-                    except OSError:  # pruned or renamed mid-listing
+                    except FileNotFoundError:  # pruned or renamed mid-listing
+                        continue
+                    except OSError as exc:
+                        problem(f"a message in {a} / {fo}", exc)
                         continue
                     hay = f"{s['from']} {s['to']} {s['subject']}".lower()
                     if all(w in hay for w in words):
@@ -226,7 +294,8 @@ def control_states(kind):
             continue
         try:
             out[acct] = json.loads(f.read_text())
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            problem(f"{kind} status for {acct}", exc)
             continue
     return out
 
@@ -251,7 +320,10 @@ def sync_state():
     """The sync loop's live state (entrypoint.sh): running|idle|paused, current account, finished ones."""
     try:
         st = json.loads((CONTROL_STATUS / "sync.json").read_text())
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        problem("sync status", exc)
         return None
     st["accounts"] = st.get("accounts", "").split()
     st["done"] = dict(x.split(":", 1) for x in st.get("done", "").split() if ":" in x)
@@ -284,7 +356,12 @@ def run_reports(days=7):
     files = sorted(LOGS.glob("runs-*.jsonl"), reverse=True)[:days] if LOGS.exists() else []
     runs = []
     for f in files:
-        for line in f.read_text().splitlines():
+        try:
+            text = f.read_text()
+        except OSError as exc:
+            problem("run report", exc)
+            continue
+        for line in text.splitlines():
             try:
                 runs.append(json.loads(line))
             except json.JSONDecodeError:
@@ -324,9 +401,10 @@ def copy_button(label, *, text=None, target=None):
     return f'<button type="button" class="btn" {attr}>{e(label)}</button>'
 
 
-def sidebar(cur_acct=None, cur_folder=None, cur_tag=None):
+def sidebar(cur_acct=None, cur_folder=None, cur_tag=None, box=""):
     meta = account_meta()
-    out = ['<nav class="side">', f'<a class="side-all{" on" if not (cur_acct or cur_tag) else ""}" href="/m">All mail</a>']
+    out = ['<nav class="side">', f'<a class="side-all{" on" if not (cur_acct or cur_tag or box) else ""}" href="/m">All mail</a>',
+           f'<a class="side-all{" on" if box and not cur_acct else ""}" href="{url("/m", box="drafts")}">Drafts</a>']
     groups = {}
     for a in accounts():
         groups.setdefault((meta.get(a) or {}).get("kind", "other"), []).append(a)
@@ -358,6 +436,12 @@ def page(title, body, side="", head=""):
     current = "Mail" if side else title
     nav = "".join(f'<a href="{h}"{" class=on" if n == current or (h == "/logs" and title.endswith((".log", ".jsonl"))) else ""}>{n}</a>'
                   for h, n in (("/", "Overview"), ("/m", "Mail"), ("/runs", "Run reports"), ("/logs", "Logs"), ("/rules", "Rules")))
+    probs = getattr(_req, "problems", None) or []
+    if probs:
+        items = "".join(f"<li>{e(p)}</li>" for p in probs[:8]) + (f"<li>… and {len(probs) - 8} more</li>" if len(probs) > 8 else "")
+        body = (f'<div class="warn"><b>Some files couldn\'t be read, so this page may be incomplete.</b><ul>{items}</ul>'
+                "Usually <code>data/</code> belongs to a different user than the containers run as "
+                "(README: Troubleshooting).</div>") + body
     layout = f'<div class="layout">{side}<main>{body}</main></div>' if side else f"<main class=\"wide\">{body}</main>"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -376,34 +460,42 @@ def view_overview():
     cards = []
     # Accounts with local mail, plus any the last run reported or that can be tested (invalid, never synced).
     for a in dict.fromkeys(accounts() + list(by_acct) + list(checks)):
-        m = meta.get(a) or {}
-        msgs = list_messages(acct=a)
-        unread = sum(s["unread"] for s in msgs)
-        r = by_acct.get(a)
-        if r and r["status"] == "invalid" and a in checks:
-            # Invalid in the last run, but the mail container accepts it now (it only lists valid accounts
-            # for testing): the settings were fixed since, so don't show the old INVALID.
-            r = {**r, "status": "fixed", "error": None}
-        if live_pill(a, sync):
-            status = live_pill(a, sync)
-        elif r and r["status"] == "fixed":
-            status = '<span class="pill">SETTINGS OK</span>'
-        else:
-            status = ('<span class="pill ok">SYNCED</span>' if r and r["status"] == "ok" else
-                      f'<span class="pill bad">{e(r["status"].upper())}</span>' if r else '<span class="pill">no report</span>')
-        label = m.get("label") or a
-        # The account name under the label only when it differs (no label in accounts.yaml: just the name once).
-        sub = " · ".join(x for x in (a if label != a else "", m.get("kind", ""), m.get("business", "")) if x)
-        err = f'<p class="err">{e(r["error"])}</p>' if r and r.get("error") else ""
-        if err and sync and sync.get("state") == "running" and a in sync["accounts"]:
-            # A run is in progress: done fine this run means the old error is gone; otherwise it's the last run's.
-            err = "" if sync["done"].get(a) == "ok" else f'<p class="err">Last run: {e(r["error"])}</p>'
-        if r and r["status"] == "fixed":
-            err = '<p class="muted">Settings fixed since the last run. It syncs on the next one.</p>'
-        cards.append(f"""<div class="card"><div class="card-h"><a href="{url('/m', acct=a)}"><b>{e(label)}</b></a>{status}</div>
-{f'<div class="muted">{e(sub)}</div>' if sub else ''}
-<div class="stats"><span><b>{len(msgs)}</b> message{plural(len(msgs))}</span><span><b>{unread}</b> unread</span>
-<span><b>{len(folders(a))}</b> folder{plural(len(folders(a)))}</span></div>{err}{check_line(a, checks.get(a))}</div>""")
+        try:
+            m = meta.get(a) or {}
+            msgs = list_messages(acct=a)
+            unread = sum(s["unread"] for s in msgs)
+            n_drafts = sum(is_drafts(s["folder"]) for s in msgs)
+            drafts_stat = (f'<a href="{url("/m", acct=a, box="drafts")}"><b>{n_drafts}</b> draft{plural(n_drafts)}</a>'
+                           if n_drafts else "")
+            r = by_acct.get(a)
+            if r and r["status"] == "invalid" and a in checks:
+                # Invalid in the last run, but the mail container accepts it now (it only lists valid accounts
+                # for testing): the settings were fixed since, so don't show the old INVALID.
+                r = {**r, "status": "fixed", "error": None}
+            if live_pill(a, sync):
+                status = live_pill(a, sync)
+            elif r and r["status"] == "fixed":
+                status = '<span class="pill">SETTINGS OK</span>'
+            else:
+                status = ('<span class="pill ok">SYNCED</span>' if r and r["status"] == "ok" else
+                          f'<span class="pill bad">{e(r["status"].upper())}</span>' if r else '<span class="pill">no report</span>')
+            label = m.get("label") or a
+            # The account name under the label only when it differs (no label in accounts.yaml: just the name once).
+            sub = " · ".join(x for x in (a if label != a else "", m.get("kind", ""), m.get("business", "")) if x)
+            err = f'<p class="err">{e(r["error"])}</p>' if r and r.get("error") else ""
+            if err and sync and sync.get("state") == "running" and a in sync["accounts"]:
+                # A run is in progress: done fine this run means the old error is gone; otherwise it's the last run's.
+                err = "" if sync["done"].get(a) == "ok" else f'<p class="err">Last run: {e(r["error"])}</p>'
+            if r and r["status"] == "fixed":
+                err = '<p class="muted">Settings fixed since the last run. It syncs on the next one.</p>'
+            cards.append(f"""<div class="card"><div class="card-h"><a href="{url('/m', acct=a)}"><b>{e(label)}</b></a>{status}</div>
+    {f'<div class="muted">{e(sub)}</div>' if sub else ''}
+    <div class="stats"><span><b>{len(msgs)}</b> message{plural(len(msgs))}</span><span><b>{unread}</b> unread</span>
+    <span><b>{len(folders(a))}</b> folder{plural(len(folders(a)))}</span>{drafts_stat}</div>{err}{check_line(a, checks.get(a))}</div>""")
+        except Exception as exc:  # one unreadable account mustn't take the whole overview down
+            problem(a, exc)
+            cards.append(f'<div class="card"><div class="card-h"><b>{e(a)}</b><span class="pill bad">UNREADABLE</span></div>'
+                         f'<p class="err">{e(getattr(exc, "strerror", None) or repr(exc))}</p></div>')
     when_txt = f'Last sync run {e(last["time"])} ({e(last["status"])})' if last else "No sync runs yet"
     if sync and sync.get("state") == "running":
         n, cur = len(sync["accounts"]), sync.get("current")
@@ -501,8 +593,9 @@ def view_signin(acct):
 def view_list(params):
     acct, folder = params.get("acct", ""), params.get("folder", "")
     q, tag = params.get("q", ""), params.get("tag", "")
+    box = "drafts" if params.get("box") == "drafts" else ""
     pg = max(1, int(params.get("page", "1") or 1)) if params.get("page", "1").isdigit() else 1
-    msgs = list_messages(acct or None, folder or None, q, tag)
+    msgs = list_messages(acct or None, folder or None, q, tag, box)
     total = len(msgs)
     chunk = msgs[(pg - 1) * PAGE_SIZE: pg * PAGE_SIZE]
     rows = []
@@ -510,22 +603,27 @@ def view_list(params):
         cls = " unread" if s["unread"] else ""
         marks = ("★" if s["flagged"] else "") + ("↩" if s["replied"] else "")
         where = "" if acct else f'<span class="chip">{e(s["acct"])}</span>'
-        rows.append(f"""<a class="row{cls}" href="/v/{s['id']}"><span class="from">{e(s['from'])}</span>
+        # A draft is from you: show who it's for.
+        who = f"To: {s['to']}" if is_drafts(s["folder"]) else s["from"]
+        rows.append(f"""<a class="row{cls}" href="/v/{s['id']}"><span class="from">{e(who)}</span>
 <span class="subj">{where}{e(s['subject'])}</span><span class="marks">{marks}</span><span class="date">{when(s['time'])}</span></a>""")
-    scope = tag and f"tag:{tag}" or (f"{acct} / {folder}" if folder else acct) or "All mail"
+    scope = tag and f"tag:{tag}" or (f"{acct} / {folder}" if folder else
+                                    f"{acct} / Drafts" if acct and box else acct) or ("Drafts" if box else "All mail")
     pager = []
     if pg > 1:
-        pager.append(f'<a class="btn" href="{url("/m", acct=acct, folder=folder, q=q, tag=tag, page=pg - 1)}">← Newer</a>')
+        pager.append(f'<a class="btn" href="{url("/m", acct=acct, folder=folder, q=q, tag=tag, box=box, page=pg - 1)}">← Newer</a>')
     if pg * PAGE_SIZE < total:
-        pager.append(f'<a class="btn" href="{url("/m", acct=acct, folder=folder, q=q, tag=tag, page=pg + 1)}">Older →</a>')
+        pager.append(f'<a class="btn" href="{url("/m", acct=acct, folder=folder, q=q, tag=tag, box=box, page=pg + 1)}">Older →</a>')
+    drafts_note = ('<p class="muted">Drafts Claude saved (or you started) appear here after the next sync. Open one and use '
+                   '<b>Open draft in Gmail</b> to check and send it there. MailPostA never sends.</p>')
     hidden = "".join(f'<input type="hidden" name="{k}" value="{e(v)}">' for k, v in
-                     (("acct", acct), ("folder", folder), ("tag", tag)) if v)
+                     (("acct", acct), ("folder", folder), ("tag", tag), ("box", box)) if v)
     body = f"""<div class="bar"><h1>{e(scope)}</h1>
 <form class="search" method="get" action="/m">{hidden}<input type="search" name="q" value="{e(q)}" placeholder="Search sender, recipient, subject">
 <button class="btn">Search</button></form></div>
-<p class="muted">{total} message{'s' if total != 1 else ''}{f' matching “{e(q)}”' if q else ''}</p>
+<p class="muted">{total} message{'s' if total != 1 else ''}{f' matching “{e(q)}”' if q else ''}</p>{drafts_note if box or (folder and is_drafts(folder)) else ''}
 <div class="list">{''.join(rows) or '<p class="empty">Nothing here.</p>'}</div><div class="pager">{''.join(pager)}</div>"""
-    return page(scope, body, sidebar(acct or None, folder or None, tag or None))
+    return page(scope, body, sidebar(acct or None, folder or None, tag or None, box))
 
 
 def view_message(token):
@@ -547,7 +645,13 @@ def view_message(token):
                         for i, a in enumerate(atts))
         att_html = f'<h3>Attachments</h3><ul class="atts">{items}</ul>'
     note = '<p class="muted">Converted from HTML to plain text. Use Raw for the original.</p>' if converted else ""
-    actions = " ".join([copy_button("Copy body", target="#body"),
+    links = open_links(acct, folder, mid)
+    if is_drafts(folder):
+        note += ('<p class="muted">This is a draft: open it in your mail app to check it and send it. '
+                 'MailPostA never sends.</p>')
+    actions = " ".join([*(f'<a class="btn{" primary" if i == 0 else ""}" href="{e(u)}" target="_blank" '
+                          f'rel="noopener noreferrer">{e(label)}</a>' for i, (label, u) in enumerate(links)),
+                        copy_button("Copy body", target="#body"),
                         copy_button("Copy headers + body", text=head_text + "\n\n" + body),
                         copy_button("Copy Message-ID", text=mid) if mid else "",
                         f'<a class="btn" href="/raw/{token}">Raw</a>',
@@ -651,6 +755,8 @@ position:sticky;top:0;z-index:2;box-shadow:var(--shadow)}
 h1{font-size:24px;margin:0;letter-spacing:-.015em}h2{font-size:17px;margin:18px 0 8px}h3{font-size:15px;margin:18px 0 6px}
 .bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:6px}
 .muted{color:var(--muted)}.err{color:var(--bad);font-size:13px;margin:6px 0 0}
+.warn{background:var(--gold-bg);color:var(--gold);border-radius:10px;padding:12px 16px;margin:0 0 16px;font-size:14px}
+.warn ul{margin:6px 0;padding-left:20px}.stats a{color:inherit;text-decoration:none}
 .search{display:flex;gap:6px}.search input{width:min(340px,60vw);padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:inherit}
 .btn{display:inline-block;padding:6px 13px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);
 font:inherit;font-size:14px;font-weight:500;cursor:pointer;transition:border-color .15s,background .15s}
@@ -741,6 +847,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlsplit(self.path)
         params = dict(urllib.parse.parse_qsl(u.query))
         p = u.path
+        _req.problems = []
         try:
             if p == "/":
                 return self.send(200, view_overview())
@@ -785,7 +892,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.not_found()
         except Exception as exc:  # show a plain error page rather than dropping the connection
             self.log_error("error on %s: %r", p, exc)
-            return self.send(500, page("Error", f"<h1>Something went wrong</h1><pre class=\"body\">{e(repr(exc))}</pre>"))
+            hint = ("<p>The web UI isn't allowed to read that file. Usually <code>data/</code> belongs to a different "
+                    "user than the containers run as (README: Troubleshooting).</p>") if isinstance(exc, PermissionError) else ""
+            return self.send(500, page("Error", f'<h1>Something went wrong</h1>{hint}<pre class="body">{e(repr(exc))}</pre>'
+                                                '<p><a href="/">Back to the overview</a></p>'))
 
     def not_found(self):
         self.send(404, page("Not found", '<h1>Not found</h1><p><a href="/">Back to the overview</a></p>'))

@@ -5,6 +5,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Drafts: each account's Drafts folder now syncs down by default (`[Gmail]/Drafts`, Outlook `Drafts`), the
+  web UI has a **Drafts** view across accounts and a draft count per account, and drafts list who they're for.
+- **Open in Gmail** / **Open draft in Gmail** on each message (signed in as the right account) and **All drafts
+  in Gmail**, so a draft Claude saved can be checked and sent from Gmail. Outlook: **Open Drafts in Outlook**.
+  The mail container shares each account's name, type and address with the web UI for this (nothing else).
+
+### Changed
+- The web UI no longer fails a whole page when a file can't be read (e.g. wrong owner on `data/`): it shows
+  what it could, a warning listing what it couldn't, and the overview marks just that account UNREADABLE.
+
 ### Fixed
 - Overview: each account's name shows once (it was repeated under the label when accounts.yaml had none).
 - Overview during a sync: an account that already synced fine in this run no longer shows the last run's

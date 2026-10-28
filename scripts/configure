@@ -35,7 +35,7 @@ DEFAULTS = {
     "gmail": {
         "imap_host": "imap.gmail.com",
         "imap_port": "993",
-        "sync_patterns": 'INBOX "[Gmail]/Sent Mail"',
+        "sync_patterns": 'INBOX "[Gmail]/Sent Mail" "[Gmail]/Drafts"',
         "delete_folders": "[Gmail]/All Mail",
         "trash_folder": "[Gmail]/Trash",
         "drafts_folder": "[Gmail]/Drafts",
@@ -43,7 +43,7 @@ DEFAULTS = {
     "outlook": {
         "imap_host": "outlook.office365.com",
         "imap_port": "993",
-        "sync_patterns": 'INBOX "Sent Items"',
+        "sync_patterns": 'INBOX "Sent Items" Drafts',
         "delete_folders": "INBOX,Sent Items,Archive",
         "trash_folder": "Deleted Items",
         "drafts_folder": "Drafts",
@@ -131,6 +131,13 @@ def main():
     ACCOUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     ACCOUNTS_FILE.write_text(json.dumps(accounts, indent=2))
     INVALID_FILE.write_text(json.dumps(invalid, indent=2))
+    # For the web UI's "Open in Gmail/Outlook" links: name, type and address only (it never sees the rest).
+    status = Path("/control/status")
+    if status.is_dir():
+        public = status / ".accounts.json.tmp"
+        public.write_text(json.dumps([{k: a[k] for k in ("name", "type", "address")} for a in accounts]))
+        public.chmod(0o644)
+        public.replace(status / "accounts.json")
 
     mbsync = []
     himalaya = [(TEMPLATES / "himalaya-base.tmpl").read_text()]

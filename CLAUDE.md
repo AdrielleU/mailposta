@@ -47,6 +47,8 @@ When asked how syncing is going, read these with the Read tool. Never edit or de
 - To delete from both places, use `bin/mail --tool delete-both --account <name> '<message-id>'`. Run it without `--yes` first,
   show the user the dry run, and add `--yes` only after they confirm. Get the Message-ID with
   `bin/mail -a <account> message read --raw <ID> | grep -i '^message-id'`.
+- Saved drafts sync down to the local copy's Drafts folder (`[Gmail].Drafts` / `Drafts`) on the next run; the
+  user sends them from Gmail or Outlook (the web UI links to each draft).
 - Drafts only. Never try to send mail by any route (`--send`, `message send`, `smtp`, Python `smtplib`, curl, Graph API, ...).
   If the user wants something sent, save it as a draft and tell them it's waiting in Drafts.
 - Never print or log `.env`, passwords, or OAuth tokens (`data/state/oauth/`). Microsoft sign-in
