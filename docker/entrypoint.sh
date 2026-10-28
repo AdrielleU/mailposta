@@ -70,8 +70,11 @@ sync_account() {
     echo "new=$new"; echo "removed_on_server=$removed"; echo "pruned=${pruned:-0}"
     echo "local_total=$(snapshot "$a" | wc -l)"
     if [ "$status" -ne 0 ]; then
-      # Prefer oauth-token's own message (it says how to sign in) over mbsync's generic last line.
-      err=$(grep -m1 -E "^(no token for|token refresh failed)" "$run/$a.mbsync" || redact < "$run/$a.mbsync" | grep -v '^\[SASL' | grep . | tail -1)
+      # Prefer oauth-token's own message (it says how to sign in), then the first line that reads like an
+      # error (not mbsync's "Channels: ... Far: ... Near: ..." summary, which comes last), then the last line.
+      err=$(grep -m1 -E "^(no token for|token refresh failed)" "$run/$a.mbsync" ||
+            redact < "$run/$a.mbsync" | grep -v '^\[SASL' | grep -m1 -iE 'error|denied|fail|refused|timed out|not found' ||
+            redact < "$run/$a.mbsync" | grep -v '^\[SASL' | grep . | tail -1)
       echo "error=$(printf '%s' "$err" | tr -d '\r' | cut -c1-300)"
     fi
   } > "$run/$a.env"

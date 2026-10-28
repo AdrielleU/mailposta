@@ -5,6 +5,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Overview: each account's name shows once (it was repeated under the label when accounts.yaml had none).
+- Overview during a sync: an account that already synced fine in this run no longer shows the last run's
+  error; the others show it as "Last run: ...".
+- Run reports name the real mbsync error (e.g. "Permission denied") instead of its closing
+  "Channels: ... Far: ... Near: ..." summary line.
+
 ## [0.2.3] - 2026-10-28
 
 ### Changed

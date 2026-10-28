@@ -391,12 +391,17 @@ def view_overview():
         else:
             status = ('<span class="pill ok">SYNCED</span>' if r and r["status"] == "ok" else
                       f'<span class="pill bad">{e(r["status"].upper())}</span>' if r else '<span class="pill">no report</span>')
-        sub = " · ".join(x for x in (m.get("kind", ""), m.get("business", "")) if x)
+        label = m.get("label") or a
+        # The account name under the label only when it differs (no label in accounts.yaml: just the name once).
+        sub = " · ".join(x for x in (a if label != a else "", m.get("kind", ""), m.get("business", "")) if x)
         err = f'<p class="err">{e(r["error"])}</p>' if r and r.get("error") else ""
+        if err and sync and sync.get("state") == "running" and a in sync["accounts"]:
+            # A run is in progress: done fine this run means the old error is gone; otherwise it's the last run's.
+            err = "" if sync["done"].get(a) == "ok" else f'<p class="err">Last run: {e(r["error"])}</p>'
         if r and r["status"] == "fixed":
             err = '<p class="muted">Settings fixed since the last run. It syncs on the next one.</p>'
-        cards.append(f"""<div class="card"><div class="card-h"><a href="{url('/m', acct=a)}"><b>{e(m.get('label') or a)}</b></a>{status}</div>
-<div class="muted">{e(a)}{' · ' + e(sub) if sub else ''}</div>
+        cards.append(f"""<div class="card"><div class="card-h"><a href="{url('/m', acct=a)}"><b>{e(label)}</b></a>{status}</div>
+{f'<div class="muted">{e(sub)}</div>' if sub else ''}
 <div class="stats"><span><b>{len(msgs)}</b> message{plural(len(msgs))}</span><span><b>{unread}</b> unread</span>
 <span><b>{len(folders(a))}</b> folder{plural(len(folders(a)))}</span></div>{err}{check_line(a, checks.get(a))}</div>""")
     when_txt = f'Last sync run {e(last["time"])} ({e(last["status"])})' if last else "No sync runs yet"
