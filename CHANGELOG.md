@@ -5,6 +5,13 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- README: **Every day, on a schedule**, running a `PROMPT.md` task (e.g. the status report) with
+  `bin/daily` from cron (Linux, macOS) or Windows Task Scheduler (through WSL), what such a run can do
+  (read only), and keeping the containers up after a reboot.
+- `bin/daily [task]`: runs one `PROMPT.md` task with `claude -p` and appends the answer to
+  `data/logs/claude-YYYY-MM-DD.log`.
+
 ## [0.2.1] - 2026-10-27
 
 ### Added

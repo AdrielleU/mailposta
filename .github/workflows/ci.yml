@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: shellcheck
-        run: shellcheck -S warning bin/mail bin/setup scripts/prune docker/entrypoint.sh
+        run: shellcheck -S warning bin/mail bin/setup bin/daily scripts/prune docker/entrypoint.sh
 
       - name: Python syntax
         run: |

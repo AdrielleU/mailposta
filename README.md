@@ -235,6 +235,63 @@ bin/mail --tool delete-both --account work '<message-id>' --yes
 ```
 Run `bin/mail <command> --help` for every option. himalaya's search syntax is in `bin/mail envelope search --help`.
 
+### Every day, on a schedule
+The containers sync on their own around the clock (or within `SYNC_HOURS`). To also get a daily report from
+Claude, schedule `bin/daily`. It runs Claude Code non-interactively (`claude -p`) **on the host, in the
+MailPostA folder**, just like an interactive session: that folder gives it `CLAUDE.md`, `PROMPT.md` and
+`.claude/settings.json`, and it reaches the mail through `bin/mail` into the running `mailposta-mail` container.
+The answer is appended to `data/logs/claude-YYYY-MM-DD.log`.
+
+```sh
+bin/daily                                          # status report, last 24 hours, all accounts
+bin/daily "run the needs reply task, last 3 days"  # any task from PROMPT.md
+bin/daily "run the sync health task"
+```
+Run it once by hand first. It needs Claude Code installed and signed in (`claude`) as the same user.
+
+**Linux and macOS (cron).** `crontab -e` and add a line with the full path to your MailPostA folder
+(`pwd` there prints it). Every day at 7:00:
+```cron
+0 7 * * * /path/to/mailposta/bin/daily
+```
+
+**Windows.** MailPostA runs inside WSL (see [Windows](#windows)), so Claude has to run there too: from the
+Windows side it can't reach `bin/mail`. Two ways:
+
+- **Claude desktop app (interactive).** In the Code tab, open the environment selector under the prompt box,
+  pick your distribution under **WSL**, then open the MailPostA folder (e.g. `/home/<you>/mailposta`, or
+  `\\wsl.localhost\Ubuntu\home\<you>\mailposta` from the normal folder picker, which reopens it inside WSL).
+  The session's shell, `bin/mail` and Docker all run inside the distribution, so it works like the CLI. Needs
+  WSL 2 and `git` in the distribution. See [Claude Code on WSL in Desktop](https://code.claude.com/docs/en/desktop-wsl).
+  The desktop app also has **Scheduled** tasks, but they only run while the app is open and the computer is
+  awake, and Anthropic doesn't document them for WSL sessions. Try one; if it can't pick a WSL folder, use
+  Task Scheduler below.
+- **Task Scheduler (runs unattended).** Install Claude Code inside WSL (Ubuntu) and sign in there once with
+  `claude`. Then, in PowerShell (change the time, `Ubuntu` if your distribution has another name, and
+  `~/mailposta` to your folder):
+  ```powershell
+  $action  = New-ScheduledTaskAction -Execute "wsl.exe" -Argument '-d Ubuntu -- bash -lc "~/mailposta/bin/daily"'
+  $trigger = New-ScheduledTaskTrigger -Daily -At 7:00
+  Register-ScheduledTask -TaskName "MailPostA daily report" -Action $action -Trigger $trigger
+  ```
+  Or in the Task Scheduler app: **Create Basic Task** → Daily → **Start a program**, program `wsl.exe`,
+  arguments `-d Ubuntu -- bash -lc "~/mailposta/bin/daily"`. It runs while you're signed in to Windows, which is
+  also when Docker Desktop is running. The reports are in
+  `\\wsl.localhost\Ubuntu\home\<you>\mailposta\data\logs\`.
+
+What a scheduled run can and can't do:
+- **Read only.** With nobody there to approve, everything `.claude/settings.json` puts under `ask` (drafts,
+  moves, flags, deletes with `--yes`) is refused, and the `deny` rules (`.env`, tokens, sending) still apply.
+  It reads, searches and reports; you act on the report yourself.
+- **Logged as Claude.** Its `bin/mail` calls appear in `data/logs/audit-*.log` with `caller=claude`. The
+  `claude-*.log` reports are deleted after `LOG_RETENTION_DAYS` like the other logs. The web UI's Logs page
+  doesn't list them, so open them from the folder.
+- **Uses your Claude login.** Each run counts toward your Claude usage.
+- **Needs the containers running.** On Linux with rootless Podman, run once
+  `systemctl --user enable --now podman-restart.service` and `loginctl enable-linger $USER`, so they come back
+  after a reboot and cron can reach them while you're logged out. Docker: have the Docker service (or Docker
+  Desktop) start at boot or sign-in.
+
 ## Rules, tags and folders
 
 Your rules live in `data/rules/` (gitignored, so client names and addresses stay private):
@@ -369,8 +426,9 @@ The older `GMAIL_*`/`WORK_*` layout (without `ACCOUNTS`) is still accepted.
 ## Windows
 **WSL2 is required.** Native Windows (PowerShell, cmd, or a project folder on `C:\`) is not supported.
 1. Install WSL2 with Ubuntu (`wsl --install`), then Docker Desktop with WSL integration enabled for that distro.
-2. Clone or copy the project into the Linux filesystem (e.g. `~/emailassist`, not `/mnt/c/...`).
-3. Run Claude Code inside WSL from that folder.
+2. Clone or copy the project into the Linux filesystem (e.g. `~/mailposta`, not `/mnt/c/...`).
+3. Run Claude Code inside WSL from that folder: the CLI in a WSL terminal, or the Claude desktop app's Code tab
+   with your distribution picked under **WSL** (see [Every day, on a schedule](#every-day-on-a-schedule)).
 
 Everything then works exactly as on Linux, and the web UI opens from your Windows browser at
 http://127.0.0.1:17203 (WSL forwards localhost). Don't run it from a `C:\` folder: Maildir filenames contain `:`,
@@ -398,6 +456,7 @@ endings when the repo is checked out on Windows.
 ```
 bin/mail                 host wrapper: send guard, audit log
 bin/setup                first-time data folders, starter rules and .env
+bin/daily                one PROMPT.md task with claude -p, for cron or Task Scheduler
 docker-compose.yml       mail (sync), web (UI), login (Caddy, its Caddyfile inline); volumes data/{mail,state,index,logs,rules,control}
 docker-compose.build.yml build the image from this checkout instead of pulling it
 docker/Dockerfile        Debian + mbsync + himalaya (pinned release) + notmuch

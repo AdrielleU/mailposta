@@ -1,0 +1,24 @@
+#!/bin/sh
+# Runs one PROMPT.md task with Claude Code (non-interactive) and appends the answer to
+# data/logs/claude-YYYY-MM-DD.log. Meant for cron or Windows Task Scheduler (README: Every day, on a schedule).
+#   bin/daily                                            status report, last 24 hours, all accounts
+#   bin/daily "run the needs reply task, last 3 days"    any task from PROMPT.md
+# Read only: with nobody there to approve, everything .claude/settings.json puts under "ask" is refused.
+# Finds claude on PATH or in ~/.local/bin; set CLAUDE_BIN to use another one.
+set -eu
+cd "$(dirname "$0")/.."
+
+task="${1:-run the status report task for the last 24 hours, all accounts}"
+claude="${CLAUDE_BIN:-$(command -v claude || echo "$HOME/.local/bin/claude")}"
+[ -x "$claude" ] || { echo "bin/daily: Claude Code not found (install it, or set CLAUDE_BIN)" >&2; exit 1; }
+
+mkdir -p data/logs
+log="data/logs/claude-$(date +%F).log"
+status=0
+{
+  echo "=== $(date -Iseconds) $task"
+  "$claude" -p "Read PROMPT.md and $task." || status=$?
+  echo
+} >> "$log" 2>&1
+[ "$status" -eq 0 ] || echo "bin/daily: claude exited with $status (see $log)" >&2
+exit "$status"

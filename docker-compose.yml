@@ -7,7 +7,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 #
 # Linux or macOS. On Windows, WSL2 is required: run everything inside WSL (Ubuntu) with Docker Desktop's
-# WSL integration, and keep the project in the Linux filesystem (~/emailassist, not /mnt/c/...). Maildir
+# WSL integration, and keep the project in the Linux filesystem (~/mailposta, not /mnt/c/...). Maildir
 # file names contain ":", which Windows drives (NTFS) can't store.
 #
 # Data (bind mounts, all git-ignored; back up data/ and that's everything):
