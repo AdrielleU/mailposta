@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-28
+
 ### Changed
 - The task playbooks now live in `data/PROMPT.md`: the release download ships it there (0.2.2's download
   left `PROMPT.md` out), and in a git checkout `bin/setup` copies it from `PROMPT.md`. Reference it as
