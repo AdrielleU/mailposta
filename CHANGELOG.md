@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-27
+
 ### Added
 - README: **Every day, on a schedule**, running a `PROMPT.md` task (e.g. the status report) with
   `bin/daily` from cron (Linux, macOS) or Windows Task Scheduler (through WSL), what such a run can do
