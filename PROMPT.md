@@ -1,16 +1,16 @@
-# PROMPT.md: email tasks for Claude Code
+# data/PROMPT.md: email tasks for Claude Code
 
 **How to use:** in Claude Code, reference this file and name a task, e.g.
 
 ```
-@PROMPT.md status report
-@PROMPT.md needs reply, work only, last 3 days
-@PROMPT.md draft reply to the latest email from Bob: Thursday at 2 works
-@PROMPT.md cleanup personal
-@PROMPT.md sync health
-@PROMPT.md suggest rules
-@PROMPT.md organize work
-@PROMPT.md business only: status report
+@data/PROMPT.md status report
+@data/PROMPT.md needs reply, work only, last 3 days
+@data/PROMPT.md draft reply to the latest email from Bob: Thursday at 2 works
+@data/PROMPT.md cleanup personal
+@data/PROMPT.md sync health
+@data/PROMPT.md suggest rules
+@data/PROMPT.md organize work
+@data/PROMPT.md business only: status report
 ```
 
 Anything after the task name narrows it (account, time range, sender, topic). With no task named, run **status report**.

@@ -14,6 +14,13 @@ for f in accounts.yaml tags.yaml; do
   fi
 done
 
+# The task playbooks Claude follows (@data/PROMPT.md, bin/daily). The release download ships it in data/;
+# a git checkout copies it from PROMPT.md. Delete it and run this again to get the newest version.
+if [ ! -e data/PROMPT.md ] && [ -e PROMPT.md ]; then
+  cp PROMPT.md data/PROMPT.md
+  echo "created data/PROMPT.md (task playbooks for Claude)"
+fi
+
 if [ ! -e .env ]; then
   cp .env.example .env
   chmod 600 .env

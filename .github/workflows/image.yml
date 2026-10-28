@@ -97,6 +97,7 @@ jobs:
           mkdir -p "bundle/mailposta"
           cp -r docker-compose.yml .env.example bin examples CLAUDE.md README.md LICENSE NOTICE "bundle/mailposta/"
           mkdir -p bundle/mailposta/.claude && cp .claude/settings.json bundle/mailposta/.claude/
+          mkdir -p bundle/mailposta/data && cp PROMPT.md bundle/mailposta/data/PROMPT.md
           tar czf "mailposta-$version.tar.gz" -C bundle mailposta
           gh release create "$TAG" --title "MailPostA $version" --notes-file notes.md --verify-tag $prerelease \
             "mailposta-$version.tar.gz"

@@ -103,7 +103,7 @@ Get the files either way:
 - **Without git:** download `mailposta-<version>.tar.gz` from the
   [latest release](https://github.com/AdrielleU/mailposta/releases/latest) and unpack it
   (`tar xzf mailposta-*.tar.gz && cd mailposta`). It holds `docker-compose.yml`, `.env.example`, `bin/`,
-  the starter rules, `CLAUDE.md` and `.claude/settings.json`.
+  the starter rules, `data/PROMPT.md` (the task playbooks), `CLAUDE.md` and `.claude/settings.json`.
 - **With git:** `git clone https://github.com/AdrielleU/mailposta && cd mailposta`.
 
 ### 1. Prepare your accounts
@@ -187,15 +187,15 @@ Then open **http://127.0.0.1:17203** and log in.
 ## Using it
 
 ### With Claude Code
-For consistent results, reference `PROMPT.md` and name a task:
+For consistent results, reference `data/PROMPT.md` and name a task:
 ```
-@PROMPT.md status report
-@PROMPT.md needs reply, work only, last 3 days
-@PROMPT.md draft reply to the latest email from Bob: Thursday at 2 works
-@PROMPT.md cleanup personal
-@PROMPT.md sync health
+@data/PROMPT.md status report
+@data/PROMPT.md needs reply, work only, last 3 days
+@data/PROMPT.md draft reply to the latest email from Bob: Thursday at 2 works
+@data/PROMPT.md cleanup personal
+@data/PROMPT.md sync health
 ```
-`PROMPT.md` lists every task (status report, needs reply, summarize, draft reply, cleanup, sync health,
+`data/PROMPT.md` lists every task (status report, needs reply, summarize, draft reply, cleanup, sync health,
 activity, find) and how Claude should run and present each one.
 
 Or just ask in your own words:
@@ -238,13 +238,13 @@ Run `bin/mail <command> --help` for every option. himalaya's search syntax is in
 ### Every day, on a schedule
 The containers sync on their own around the clock (or within `SYNC_HOURS`). To also get a daily report from
 Claude, schedule `bin/daily`. It runs Claude Code non-interactively (`claude -p`) **on the host, in the
-MailPostA folder**, just like an interactive session: that folder gives it `CLAUDE.md`, `PROMPT.md` and
+MailPostA folder**, just like an interactive session: that folder gives it `CLAUDE.md`, `data/PROMPT.md` and
 `.claude/settings.json`, and it reaches the mail through `bin/mail` into the running `mailposta-mail` container.
 The answer is appended to `data/logs/claude-YYYY-MM-DD.log`.
 
 ```sh
 bin/daily                                          # status report, last 24 hours, all accounts
-bin/daily "run the needs reply task, last 3 days"  # any task from PROMPT.md
+bin/daily "run the needs reply task, last 3 days"  # any task from data/PROMPT.md
 bin/daily "run the sync health task"
 ```
 Run it once by hand first. It needs Claude Code installed and signed in (`claude`) as the same user.
@@ -316,9 +316,9 @@ bin/mail --tool notmuch count tag:receipt
 ```
 
 With Claude Code:
-- `@PROMPT.md suggest rules`: Claude reviews the suggestions, names business contacts sensibly
+- `@data/PROMPT.md suggest rules`: Claude reviews the suggestions, names business contacts sensibly
   (`client/…`, `vendor/…`), and asks you which ones to add before editing `tags.yaml`.
-- `@PROMPT.md organize`: shows which mail would move into each rule's `folder` on the server,
+- `@data/PROMPT.md organize`: shows which mail would move into each rule's `folder` on the server,
   and moves it only after you confirm. This is the only thing that changes server folders.
 
 Removing a rule doesn't remove tags it already added. To clear them, run for example
@@ -456,7 +456,7 @@ endings when the repo is checked out on Windows.
 ```
 bin/mail                 host wrapper: send guard, audit log
 bin/setup                first-time data folders, starter rules and .env
-bin/daily                one PROMPT.md task with claude -p, for cron or Task Scheduler
+bin/daily                one data/PROMPT.md task with claude -p, for cron or Task Scheduler
 docker-compose.yml       mail (sync), web (UI), login (Caddy, its Caddyfile inline); volumes data/{mail,state,index,logs,rules,control}
 docker-compose.build.yml build the image from this checkout instead of pulling it
 docker/Dockerfile        Debian + mbsync + himalaya (pinned release) + notmuch
@@ -475,7 +475,7 @@ scripts/webui            the web UI: read-only, plus starting Microsoft sign-ins
 examples/rules/          starter accounts.yaml and tags.yaml (copied by bin/setup)
 data/rules/              your account kinds and tag rules (gitignored)
 CLAUDE.md                rules Claude Code follows here (always loaded)
-PROMPT.md                task playbooks you reference with @PROMPT.md
+PROMPT.md                task playbooks; bin/setup copies it to data/PROMPT.md, which you reference
 .claude/settings.json    Claude Code permissions (allow / ask / deny)
 LICENSE, NOTICE          MIT license; third-party credits and trademarks
 SECURITY.md              how to report vulnerabilities
